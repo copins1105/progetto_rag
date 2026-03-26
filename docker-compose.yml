@@ -1,0 +1,34 @@
+services:
+  # Database Relazionale (PostgreSQL + pgvector)
+  db:
+    # Immagine scelta per compatibilità con il setup della collega
+    image: ankane/pgvector:latest
+    container_name: policy_db_container
+    ports:
+    - "5432:5432"  # La tua porta (Davide)
+    environment:
+      POSTGRES_DB: policy_db
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: POLICYNAVIGATOR
+    volumes:
+      # Inizializza il database con lo schema SQL al primo avvio
+      - ./sql_scripts:/docker-entrypoint-initdb.d
+      # Mantiene i dati salvati anche se spegni il container
+      - postgres_data:/var/lib/postgresql/data
+
+  # Database Non Relazionale / Vettoriale (ChromaDB)
+  chroma:
+    image: chromadb/chroma:latest
+    container_name: chromadb_container
+    ports:
+      - "8000:8000"
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+      - PERSIST_DIRECTORY=/chroma/chroma
+    volumes:
+      # Mantiene i vettori e i metadati salvati su disco
+      - ./chroma_data:/chroma/chroma
+
+volumes:
+  postgres_data:
