@@ -8,21 +8,10 @@ Flusso del grafo:
   end_courtesy                            (max 1 retry, poi
                                            end_not_found diretto)
 
-BUG RISOLTI rispetto alla versione precedente:
-  BUG 1: Loop infinito — fallback_agent ora usa route_after_fallback dedicata
-          invece di edge fisso verso relevance_check_agent. Impossibile ciclare.
-  BUG 2: import json/re spostati a livello modulo (non più dentro routing_agent).
-  BUG 3: verdict inizializzato prima del try in relevance_check_agent (no NameError).
-  BUG 4: fallback_agent non sovrascrive la domanda originale — preserva question
-          per routing e relevance check corretti al retry.
-  BUG 5: route_after_retrieval gestisce il caso contesto-vuoto + retry-esaurito
-          con end_not_found diretto, salta la chiamata LLM inutile al relevance_check.
-
-NUOVE FUNZIONALITÀ:
-  HyDE  : query_agent genera una risposta ipotetica in linguaggio formale per
-          migliorare il matching vettoriale su manuali e documenti tecnici.
-  Prompt adattivo: answer_agent seleziona istruzioni specifiche in base al tipo
-          documento rilevato (manuale / policy / bando / generico).
+MODIFICA CITAZIONI:
+  Il prompt ora istruisce l'LLM a citare sempre con formato [TITOLO_DOCUMENTO]
+  usando esattamente il valore di titolo_documento presente nel CONTESTO.
+  Questo garantisce che il frontend possa sempre riconoscere e linkare le citazioni.
 """
 
 import re
@@ -42,13 +31,10 @@ logger = logging.getLogger(__name__)
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURAZIONE
 # ═══════════════════════════════════════════════════════════════
-MIN_CONTEXT_WORDS = 30      # alzato da 20: evita risposte su contesti quasi vuoti
+MIN_CONTEXT_WORDS = 30
 MAX_RETRIES       = 1
 MAX_HISTORY_MSGS  = 6
-MAX_CONTEXT_CHARS = 6000   # tronca il contesto prima di mandarlo all'LLM (~1500 token)
-                            # previene risposte lente/confuse con troppi chunk
-
-# HyDE: con API esterna il costo è basso e il beneficio su docs formali è alto → True
+MAX_CONTEXT_CHARS = 6000
 USE_HYDE = True
 
 # ═══════════════════════════════════════════════════════════════
@@ -56,7 +42,7 @@ USE_HYDE = True
 # ═══════════════════════════════════════════════════════════════
 class AgentState(TypedDict):
     question:              str
-    retrieval_query:       str           # query usata per il retrieval (originale o HyDE)
+    retrieval_query:       str
     context:               str
     source_docs:           List[Document]
     answer:                str
@@ -68,11 +54,11 @@ class AgentState(TypedDict):
     courtesy_answer:       str
     context_relevant:      bool
     filter_titles:         Optional[List[str]]
-    conversation_summary:  str           # riassunto aggiornato ad ogni turno
+    conversation_summary:  str
 
 
 # ═══════════════════════════════════════════════════════════════
-# REGEX — compilate a livello modulo, una volta sola
+# REGEX
 # ═══════════════════════════════════════════════════════════════
 _INJECTION_RE = re.compile('|'.join([
     r'ignora\s+(tutte?\s+le\s+)?(istruzioni|regole|prompt)',
@@ -103,15 +89,12 @@ _OUT_OF_SCOPE_RE = re.compile('|'.join([
     r'come\s+(posso\s+)?(rubar|uccider|ferir|esplodr)',
 ]), re.IGNORECASE)
 
-
-# Rilevamento tipo documento dai metadati
 _DOC_TYPE_RE = {
     "manuale": re.compile(r'\b(manuale|istruzion|procedur|operativ|tecnic)\w*\b', re.IGNORECASE),
     "policy":  re.compile(r'\b(policy|politic|regolament|ferie|permesso|rimborso|benefit|stipendio)\w*\b', re.IGNORECASE),
     "bando":   re.compile(r'\b(bando|contratt|normativ|selezione|graduatoria|punteggi|requisit)\w*\b', re.IGNORECASE),
 }
 
-# JSON array parser — compilato una volta
 _JSON_ARRAY_RE = re.compile(r'\[.*?\]', re.DOTALL)
 
 
@@ -119,7 +102,6 @@ _JSON_ARRAY_RE = re.compile(r'\[.*?\]', re.DOTALL)
 # HELPERS
 # ═══════════════════════════════════════════════════════════════
 def _detect_doc_type(docs: List[Document]) -> str:
-    """Rileva il tipo prevalente di documento per selezionare il prompt adattivo."""
     if not docs:
         return "generico"
     scores = {"manuale": 0, "policy": 0, "bando": 0}
@@ -163,7 +145,6 @@ def format_docs(docs: List[Document]) -> str:
 
 
 def _extract_content_text(context: str) -> str:
-    """Estrae solo il testo CONTENUTO dal contesto formattato, scartando i metadata."""
     lines, content_lines, in_content = context.split('\n'), [], False
     for line in lines:
         if line.startswith("CONTENUTO:"):
@@ -184,7 +165,6 @@ def context_is_empty(context: str) -> bool:
 
 
 def filter_messages(messages: List[BaseMessage], k: int = MAX_HISTORY_MSGS) -> List[BaseMessage]:
-    """Taglia la history per numero di messaggi e per lunghezza totale."""
     recent = list(messages[-k:]) if len(messages) > k else list(messages)
     MAX_CHARS = 8000
     total = sum(len(m.content) for m in recent)
@@ -236,7 +216,22 @@ DISPOSIZIONI DI SICUREZZA:
 REGOLE DI RISPOSTA:
 1. Usa SOLO le informazioni del CONTESTO. Non inventare nulla.
 2. Se manca un'informazione: "Non ho trovato i dettagli su [X] nei documenti disponibili. Le sezioni analizzate riguardano [argomenti presenti]."
-3. Ogni affermazione deve essere seguita dal titolo del documento tra parentesi, es: (ETH-COD-001).
+3. CITAZIONI — regole fondamentali:
+   - Usa SEMPRE il testo esatto che appare dopo "DOCUMENTO:" nel CONTESTO, senza modificarlo.
+   - Il numero di pagina da citare è quello che appare dopo "PAGINA:" nello stesso blocco del CONTESTO da cui hai tratto l'informazione.
+   - Non inventare documenti o pagine non presenti nel CONTESTO.
+   - QUANDO citare: inserisci la citazione solo a fine paragrafo o dopo un gruppo di affermazioni che provengono dallo stesso documento e dalla stessa pagina. NON ripetere la citazione su ogni riga se le informazioni vengono tutte dalla stessa fonte.
+   - Se le informazioni di un elenco provengono tutte dallo stesso documento e pagina, inserisci la citazione UNA SOLA VOLTA alla fine dell'elenco.
+   - Se affermazioni diverse provengono da documenti o pagine diverse, cita separatamente ciascun gruppo , usando NUMERO_PAGINA del contesto da cui hai tratto l'informazione poiche sono pagine differenti.
+   - Formato citazione: [TITOLO_DOCUMENTO|pNUMERO_PAGINA]
+   - Esempi corretti:
+     "I dipendenti devono rispettare il codice etico. [ETH-COD-001|p3]"
+     "I corsi durano 1800 ore e si svolgono a Roma. [BANDO DI SELEZIONE CORSI ITS|p4]"
+   - Esempio lista con fonte unica — cita SOLO in fondo:
+     "I corsi disponibili sono:
+     - Sviluppatore software
+     - Data Manager
+     [BANDO DI SELEZIONE CORSI ITS|p4]"
 4. NON aggiungere una sezione "FONTI CONSULTATE" in fondo.
 
 {tipo_istruzioni}
@@ -275,7 +270,6 @@ _TIPO_ISTRUZIONI = {
 }
 
 def _build_answer_chain(llm, doc_type: str):
-    """Costruisce la catena answer con prompt adattivo per il tipo documento."""
     tipo_istruzioni = _TIPO_ISTRUZIONI.get(doc_type, _TIPO_ISTRUZIONI["generico"])
     system = _SYSTEM_BASE.replace("{tipo_istruzioni}", tipo_istruzioni)
     prompt = ChatPromptTemplate.from_messages([
@@ -290,17 +284,8 @@ def _build_answer_chain(llm, doc_type: str):
 # FACTORY
 # ═══════════════════════════════════════════════════════════════
 def create_rag_chain(llm, retriever, available_titles: List[str] = None):
-    """
-    llm              : LLM LangChain (Ollama, OpenAI, ecc.)
-    retriever        : istanza SearchService con metodo as_langchain_retriever()
-    available_titles : lista titoli dalla collezione (via search_service.available_titles)
-    """
     _titles_list = "\n".join(f"- {t}" for t in (available_titles or []))
 
-    # ── Catene LLM ───────────────────────────────────────────
-
-    # Guard classifier a 3 valori: gestisce in un colpo solo blocco, cortesia e scope.
-    # Nessuna regex aggiuntiva necessaria — il LLM capisce le sfumature semantiche.
     _guard_chain = (
         ChatPromptTemplate.from_messages([
             ("system", (
@@ -320,8 +305,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         ]) | llm | StrOutputParser()
     )
 
-    # HyDE: genera un paragrafo ipotetico nello stesso registro linguistico del corpus.
-    # Usato per il retrieval vettoriale al posto della domanda in linguaggio naturale.
     _hyde_chain = (
         ChatPromptTemplate.from_messages([
             ("system", (
@@ -379,9 +362,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         ]) | llm | StrOutputParser()
     )
 
-    # Summary: aggiorna un riassunto compatto della conversazione dopo ogni turno.
-    # Usato da routing_agent e query_agent per contestualizzare le domande ambigue
-    # senza dover passare tutta la history raw a ogni nodo.
     _summary_chain = (
         ChatPromptTemplate.from_messages([
             ("system", (
@@ -398,30 +378,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         ]) | llm | StrOutputParser()
     )
 
-
-    # Summary: aggiorna un riassunto compatto della conversazione dopo ogni turno.
-    # Usato da routing_agent e query_agent per contestualizzare le domande ambigue
-    # senza dover passare tutta la history raw a ogni nodo.
-    _summary_chain = (
-        ChatPromptTemplate.from_messages([
-            ("system", (
-                "Aggiorna il riassunto della conversazione in massimo 3 righe concise. "
-                "Includi: argomenti discussi, documenti citati, informazioni chiave emerse. "
-                "Se il riassunto precedente è vuoto, crea un nuovo riassunto. "
-                "Sii fattuale e sintetico. Restituisci SOLO il riassunto aggiornato, nessuna premessa."
-            )),
-            ("human",
-             "RIASSUNTO PRECEDENTE:\n{summary}\n\n"
-             "DOMANDA: {question}\n"
-             "RISPOSTA: {answer}"
-            ),
-        ]) | llm | StrOutputParser()
-    )
-
-    # Cache retriever senza filtro — costruito una volta sola all'avvio
-    # k=10 chunk finali (era 15): contesto più denso, risposte più precise
-    # fetch_k=25: abbastanza candidati per RRF senza esagerare
-    # bm25_weight=0.4 (era 0.3): docs misti con termini tecnici beneficiano di più BM25
     _RET_K      = 10
     _RET_FETCH  = 25
     _BM25_W     = 0.3
@@ -445,9 +401,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
 
     def guard_agent(state: AgentState) -> AgentState:
         q = state["question"]
-
-        # Regex solo per sicurezza critica — deterministico e O(1),
-        # non dipende dall'LLM essere attivo.
         if _INJECTION_RE.search(q):
             return {**state, "blocked": True, "block_reason": _MSG_BLOCKED,
                     "is_courtesy": False, "courtesy_answer": ""}
@@ -458,9 +411,7 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             return {**state, "blocked": True, "block_reason": _MSG_BLOCKED,
                     "is_courtesy": False, "courtesy_answer": ""}
 
-        # Tutto il resto → classifier LLM a 3 valori.
-        # Gestisce cortesia e scope semanticamente, senza regex aggiuntive.
-        verdict = "IN_SCOPE"  # fail-open di default
+        verdict = "IN_SCOPE"
         try:
             verdict = _guard_chain.invoke({"question": q}).strip().upper()
         except Exception as e:
@@ -476,41 +427,23 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         return {**state, "blocked": False, "is_courtesy": False, "courtesy_answer": ""}
 
     def query_agent(state: AgentState) -> AgentState:
-        """
-        Genera retrieval_query tramite HyDE se abilitato.
-        Arricchisce la domanda con il summary prima di generare il testo ipotetico,
-        così HyDE produce un paragrafo contestualizzato anche per domande ambigue.
-        In caso di errore usa sempre la domanda originale come fallback sicuro.
-        """
         q       = state["question"]
         summary = state.get("conversation_summary", "")
-
-        # Domanda arricchita con contesto — usata solo per HyDE, non sovrascrive question
         hyde_input = f"Contesto: {summary}\nDomanda: {q}" if summary else q
 
         if USE_HYDE:
             try:
                 hyde_text = _hyde_chain.invoke({"question": hyde_input}).strip()
                 if hyde_text and len(hyde_text) > 20:
-                    logger.debug(f"[query_agent] HyDE: {hyde_text[:80]}...")
                     return {**state, "retrieval_query": hyde_text}
             except Exception as e:
                 logger.warning(f"[query_agent] HyDE fallito: {e} — uso domanda originale")
         return {**state, "retrieval_query": q}
 
     def routing_agent(state: AgentState) -> AgentState:
-        """
-        Identifica su quali documenti filtrare la ricerca.
-        Usa sempre state["question"] (originale), NON retrieval_query (HyDE
-        potrebbe fuorviare il router con testo sintetico invece della domanda reale).
-        Arricchisce la domanda con il summary per gestire riferimenti impliciti
-        tipo "e le scadenze?" dopo una conversazione sul bando ITS.
-        """
         if not available_titles:
             return {**state, "filter_titles": None}
 
-        # Se c'è un summary, lo antepone alla domanda per dare contesto al router.
-        # Il router capisce così "e le scadenze?" come "scadenze del bando ITS".
         summary = state.get("conversation_summary", "")
         q = state["question"]
         routing_input = f"Contesto conversazione: {summary}\nDomanda: {q}" if summary else q
@@ -527,7 +460,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             logger.warning(f"[routing_agent] Errore: {e} — ricerca su tutta la collezione")
             filter_titles = None
 
-        logger.debug(f"[routing_agent] filter_titles={filter_titles}")
         return {**state, "filter_titles": filter_titles}
 
     def retrieval_agent(state: AgentState) -> AgentState:
@@ -542,19 +474,13 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         return {**state, "context": context, "source_docs": docs, "context_relevant": False}
 
     def relevance_check_agent(state: AgentState) -> AgentState:
-        """
-        Valuta se il contesto è pertinente.
-        Usa state["question"] (originale) — non retrieval_query che potrebbe essere HyDE.
-        BUG FIX 3: verdict inizializzato prima del try.
-        """
         ctx = state["context"]
         if context_is_empty(ctx):
             return {**state, "context_relevant": False}
 
         context_preview = _extract_content_text(ctx)[:800]
-
-        verdict  = "ERROR"     # inizializzato prima del try — no NameError nel log
-        relevant = True        # fail-open di default
+        verdict  = "ERROR"
+        relevant = True
         try:
             verdict  = _relevance_chain.invoke({
                 "question":        state["question"],
@@ -564,15 +490,9 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         except Exception as e:
             logger.error(f"[relevance_check_agent] Errore LLM: {e} — fail-open")
 
-        logger.debug(f"[relevance_check] verdict={verdict} relevant={relevant}")
         return {**state, "context_relevant": relevant}
 
     def fallback_agent(state: AgentState) -> AgentState:
-        """
-        Retry con query riformulata.
-        BUG FIX 4: NON sovrascrive state["question"].
-        Aggiorna solo retrieval_query per questo retry.
-        """
         q = state["question"]
         try:
             rephrased = _rephrase_chain.invoke({"question": q}).strip()
@@ -591,12 +511,11 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             logger.error(f"[fallback_agent] Errore: {e}")
             docs, context = [], ""
 
-        logger.debug(f"[fallback_agent] retry={retry} rephrased={rephrased[:60]}")
         return {**state,
                 "context":          context,
                 "source_docs":      docs,
                 "retry_count":      retry,
-                "retrieval_query":  rephrased,   # solo retrieval_query, non question
+                "retrieval_query":  rephrased,
                 "filter_titles":    filter_titles,
                 "context_relevant": False}
 
@@ -605,15 +524,11 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         if context_is_empty(ctx):
             return {**state, "answer": _MSG_NOT_FOUND, "source_docs": []}
 
-        # Tronca a MAX_CONTEXT_CHARS: i chunk più rilevanti (top RRF) vengono
-        # sempre inclusi perché format_docs li ordina dal più al meno rilevante.
         if len(ctx) > MAX_CONTEXT_CHARS:
             ctx = ctx[:MAX_CONTEXT_CHARS]
-            logger.debug(f"[answer_agent] contesto troncato a {MAX_CONTEXT_CHARS} chars")
 
         doc_type     = _detect_doc_type(state["source_docs"])
         answer_chain = _build_answer_chain(llm, doc_type)
-        logger.debug(f"[answer_agent] doc_type={doc_type}")
 
         try:
             answer = answer_chain.invoke({
@@ -625,18 +540,14 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             logger.error(f"[answer_agent] Errore LLM: {e}")
             answer = _MSG_NOT_FOUND
 
-        # Aggiorna il summary DOPO aver generato la risposta.
-        # Il summary cattura: argomento discusso, documento citato, info chiave emersa.
-        # Non aggiorna se la risposta è un messaggio di errore standard.
         new_summary = state.get("conversation_summary", "")
         if answer != _MSG_NOT_FOUND:
             try:
                 new_summary = _summary_chain.invoke({
                     "summary":  state.get("conversation_summary", ""),
                     "question": state["question"],
-                    "answer":   answer[:500],  # tronca per non sprecare token
+                    "answer":   answer[:500],
                 }).strip()
-                logger.debug(f"[answer_agent] summary aggiornato: {new_summary[:80]}...")
             except Exception as e:
                 logger.warning(f"[answer_agent] Errore aggiornamento summary: {e}")
 
@@ -648,7 +559,7 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
     def end_courtesy(state: AgentState) -> AgentState:
         return {**state, "answer": state["courtesy_answer"], "source_docs": []}
 
-    # ── Funzioni di routing del grafo ────────────────────────
+    # ── Routing ────────────────────────────────────────────────
 
     def route_after_guard(state: AgentState) -> Literal["query_agent", "end_blocked", "end_courtesy"]:
         if state["blocked"]:     return "end_blocked"
@@ -659,7 +570,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         empty = context_is_empty(state["context"])
         if empty and state["retry_count"] < MAX_RETRIES:
             return "fallback_agent"
-        # BUG FIX 5: contesto vuoto + retry esaurito → end_not_found diretto
         if empty:
             return "end_not_found"
         return "relevance_check_agent"
@@ -669,15 +579,12 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         if state["retry_count"] < MAX_RETRIES: return "fallback_agent"
         return "end_not_found"
 
-    # BUG FIX 1: route dedicata dopo fallback.
-    # Spezza il possibile loop infinito: se il fallback trova ancora
-    # contesto vuoto → end_not_found diretto, nessun edge fisso al relevance_check.
     def route_after_fallback(state: AgentState) -> Literal["relevance_check_agent", "end_not_found"]:
         if context_is_empty(state["context"]):
             return "end_not_found"
         return "relevance_check_agent"
 
-    # ── Costruzione grafo ────────────────────────────────────
+    # ── Grafo ────────────────────────────────────────────────
     g = StateGraph(AgentState)
 
     g.add_node("guard_agent",           guard_agent)
@@ -705,15 +612,14 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         "fallback_agent":        "fallback_agent",
         "end_not_found":         "end_not_found",
     })
-    # BUG FIX 1: edge condizionale invece di add_edge fisso
     g.add_conditional_edges("fallback_agent", route_after_fallback, {
         "relevance_check_agent": "relevance_check_agent",
         "end_not_found":         "end_not_found",
     })
     g.add_conditional_edges("relevance_check_agent", route_after_relevance, {
-        "answer_agent":  "answer_agent",
+        "answer_agent":   "answer_agent",
         "fallback_agent": "fallback_agent",
-        "end_not_found": "end_not_found",
+        "end_not_found":  "end_not_found",
     })
     g.add_edge("answer_agent",  END)
     g.add_edge("end_blocked",   END)
@@ -722,7 +628,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
 
     graph = g.compile()
 
-    # ── Wrapper pubblico ─────────────────────────────────────
     class _GraphChain:
         def __init__(self, compiled_graph):
             self._graph = compiled_graph

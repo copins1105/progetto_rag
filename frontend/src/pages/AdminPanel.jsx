@@ -93,6 +93,23 @@ const s = {
     justifyContent: "center", height: "100%", color: "var(--text-muted)", gap: 12,
   },
 
+  // ── NUOVO: banner chunk attivo nel viewer ──
+  chunkBanner: {
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    padding: "6px 16px", background: "rgba(79,142,247,0.1)",
+    borderBottom: "1px solid rgba(79,142,247,0.25)", flexShrink: 0,
+    gap: 10,
+  },
+  chunkBannerText: {
+    fontSize: "0.72rem", color: "var(--accent)", fontFamily: "'DM Mono', monospace",
+    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
+  },
+  chunkBannerClear: {
+    background: "none", border: "none", cursor: "pointer",
+    color: "var(--text-muted)", fontSize: "0.75rem", padding: "2px 6px",
+    borderRadius: 4, flexShrink: 0, transition: "color 0.15s",
+  },
+
   // Right panel
   right: {
     width: "400px", flexShrink: 0, display: "flex", flexDirection: "column",
@@ -121,8 +138,6 @@ const s = {
     borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
     transition: "all 0.15s",
   }),
-
-
 
   // Ingestion
   ingestBtn: {
@@ -164,16 +179,22 @@ const s = {
     display: "flex", justifyContent: "space-between", alignItems: "center",
     marginBottom: 12, fontSize: "0.75rem", color: "var(--text-muted)",
   },
-  chunkItem: {
-    background: "var(--surface2)", border: "1px solid var(--border)",
+  chunkItem: (isActive) => ({
+    background: isActive ? "rgba(79,142,247,0.08)" : "var(--surface2)",
+    border: isActive ? "1px solid rgba(79,142,247,0.35)" : "1px solid var(--border)",
     borderRadius: "8px", overflow: "hidden", marginBottom: 6,
-  },
-  chunkHeader: {
+    transition: "border-color 0.15s, background 0.15s",
+  }),
+  chunkHeader: (isActive) => ({
     display: "flex", alignItems: "center", justifyContent: "space-between",
     padding: "8px 12px", cursor: "pointer", background: "none",
     border: "none", width: "100%", textAlign: "left", gap: 8,
-  },
-  chunkIdx: { fontSize: "0.68rem", fontFamily: "'DM Mono', monospace", color: "var(--accent)", flexShrink: 0 },
+  }),
+  chunkIdx: (isActive) => ({
+    fontSize: "0.68rem", fontFamily: "'DM Mono', monospace",
+    color: isActive ? "var(--accent)" : "var(--accent)",
+    flexShrink: 0,
+  }),
   chunkPreview: {
     fontSize: "0.72rem", color: "var(--text-dim)", overflow: "hidden",
     textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
@@ -182,6 +203,15 @@ const s = {
     padding: "10px 12px", borderTop: "1px solid var(--border)",
     fontSize: "0.72rem", fontFamily: "'DM Mono', monospace",
     color: "var(--text-dim)", whiteSpace: "pre-wrap", lineHeight: 1.7,
+  },
+  // ── NUOVO: pill "vai alla pagina" dentro il chunk body ──
+  chunkPagePill: {
+    display: "inline-flex", alignItems: "center", gap: 5,
+    background: "rgba(79,142,247,0.12)", border: "1px solid rgba(79,142,247,0.3)",
+    borderRadius: 20, padding: "3px 10px", fontSize: "0.68rem",
+    color: "var(--accent)", cursor: "pointer", marginBottom: 8,
+    transition: "background 0.15s",
+    fontFamily: "'DM Mono', monospace",
   },
   pagination: {
     display: "flex", justifyContent: "space-between", marginTop: 8,
@@ -388,15 +418,145 @@ function Sidebar({ pdfs, selected, onSelect, onUploaded, onRefresh }) {
 }
 
 // ─────────────────────────────────────────────
-// PDF VIEWER
+// HIGHLIGHT HELPERS
 // ─────────────────────────────────────────────
-function PdfViewer({ filename }) {
-  const [numPages, setNumPages]   = useState(null);
+
+function buildHighlightSet(chunkText) {
+  if (!chunkText) return new Set();
+  return new Set(
+    chunkText
+      .toLowerCase()
+      .replace(/[^\wàèéìîòùü\s]/g, " ")
+      .split(/\s+/)
+      .filter(w => w.length >= 1)
+  );
+}
+
+/**
+ * customTextRenderer per react-pdf.
+ * Spezza ogni span di testo PDF in token, avvolge i match con <mark>.
+ * Usa dangerouslySetInnerHTML tramite il ritorno di stringa HTML.
+ */
+function makeTextRenderer(highlightSet) {
+  return function ({ str, itemIndex }) {
+    if (!highlightSet || highlightSet.size === 0) return str;
+
+    // Tokenizza mantenendo spazi e punteggiatura
+    const parts = str.split(/(\s+)/);
+    const html = parts.map(part => {
+      const normalized = part.toLowerCase().replace(/[^\wàèéìîòùü]/g, "");
+      if (normalized.length >= 3 && highlightSet.has(normalized)) {
+        return `<mark style="background:#f59e0b;border-radius:2px;padding:0;">${part}</mark>`;
+      }
+      return part;
+    }).join("");
+
+    return html;
+  };
+}
+
+// ─────────────────────────────────────────────
+// PDF VIEWER
+// Gestisce tre casi:
+//   1. Nessun chunk attivo       → viewer normale
+//   2. PDF nativo (text layer)   → customTextRenderer + scroll alla prima <mark>
+//   3. PDF scansionato (no testo)→ bordo accent + banner fallback
+// ─────────────────────────────────────────────
+
+/**
+ * Usa pdfjs direttamente per controllare se la pagina ha testo estraibile.
+ * Restituisce true se la pagina contiene almeno 20 caratteri di testo reale.
+ * Questo distingue PDF nativi da scansioni prive di text layer OCR.
+ */
+async function pageHasTextLayer(pdfUrl, pageNum) {
+  try {
+    const loadingTask = pdfjs.getDocument(pdfUrl);
+    const pdf  = await loadingTask.promise;
+    const page = await pdf.getPage(pageNum);
+    const tc   = await page.getTextContent();
+    const text = tc.items.map(i => i.str).join("").trim();
+    return text.length >= 20;
+  } catch {
+    return false;
+  }
+}
+
+function PdfViewer({ filename, activeChunk, onClearChunk }) {
+  const [numPages, setNumPages]       = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [scale, setScale]         = useState(1.0);
+  const [scale, setScale]             = useState(1.0);
+  // null = non ancora controllato, true = ha text layer, false = scansione
+  const [hasText, setHasText]         = useState(null);
+  // controlla visibilità banner avviso PDF scansionato
+  const [showScanWarning, setShowScanWarning] = useState(false);
+  const scanWarningTimer                      = useRef(null);
+  const viewerContentRef                      = useRef(null);
+
   const url = `${API}/api/v1/admin/pdf/${encodeURIComponent(filename)}`;
 
-  useEffect(() => { setCurrentPage(1); setNumPages(null); }, [filename]);
+  // Reset quando cambia il file
+  useEffect(() => {
+    setCurrentPage(1);
+    setNumPages(null);
+    setHasText(null);
+  }, [filename]);
+
+  // Naviga alla pagina del chunk e rileva il text layer
+  useEffect(() => {
+    if (!activeChunk) return;
+    const p = parseInt(activeChunk.metadata?.pagina);
+    const targetPage = (p && p >= 1) ? p : currentPage;
+
+    // Naviga alla pagina
+    if (p && p >= 1) setCurrentPage(p);
+
+    // Controlla se quella pagina ha testo selezionabile
+    setHasText(null); // mostra "verifica in corso" brevemente
+    pageHasTextLayer(url, targetPage).then(result => setHasText(result));
+  }, [activeChunk]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Quando rileviamo un PDF scansionato mostra il banner e lo fa sparire dopo 4s
+  useEffect(() => {
+    if (hasText === false) {
+      setShowScanWarning(true);
+      clearTimeout(scanWarningTimer.current);
+      scanWarningTimer.current = setTimeout(() => setShowScanWarning(false), 4000);
+    } else {
+      setShowScanWarning(false);
+    }
+    return () => clearTimeout(scanWarningTimer.current);
+  }, [hasText]);
+
+  // Scroll automatico alla prima <mark> dopo il render della pagina
+  // Aspetta che react-pdf abbia terminato il render del text layer (~300ms)
+  useEffect(() => {
+    if (!activeChunk || hasText !== true) return;
+    const timer = setTimeout(() => {
+      const container = viewerContentRef.current;
+      if (!container) return;
+      const firstMark = container.querySelector("mark");
+      if (firstMark) {
+        firstMark.scrollIntoView({ behavior: "smooth", block: "center" });
+      }
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [activeChunk, hasText, currentPage]);
+
+  // Costruisce highlight solo se sappiamo che c'è il text layer
+  const highlightSet = (activeChunk && hasText === true)
+    ? buildHighlightSet(activeChunk.text)
+    : null;
+  const textRenderer = highlightSet ? makeTextRenderer(highlightSet) : undefined;
+
+  // Stile bordo pagina per PDF scansionati con chunk attivo
+  const pageWrapStyle = (activeChunk && hasText === false)
+    ? {
+        outline: "2px solid rgba(79,142,247,0.5)",
+        outlineOffset: "3px",
+        borderRadius: "4px",
+        boxShadow: "0 0 20px rgba(79,142,247,0.12)",
+      }
+    : {};
 
   return (
     <div style={s.viewer}>
@@ -427,20 +587,65 @@ function PdfViewer({ filename }) {
         </div>
       </div>
 
+      {/* Banner chunk attivo — mostra stato rilevamento */}
+      {activeChunk && (
+        <div style={s.chunkBanner}>
+          <span style={{ fontSize: "0.68rem", color: "rgba(79,142,247,0.7)", fontFamily: "'DM Mono', monospace", flexShrink: 0 }}>
+            chunk
+          </span>
+          <span style={s.chunkBannerText}>
+            {activeChunk.preview || activeChunk.text?.slice(0, 80)}
+          </span>
+          {activeChunk.metadata?.pagina && (
+            <span style={{ fontSize: "0.68rem", color: "rgba(79,142,247,0.8)", fontFamily: "'DM Mono', monospace", flexShrink: 0 }}>
+              p.{activeChunk.metadata.pagina}
+            </span>
+          )}
+          <button style={s.chunkBannerClear} onClick={onClearChunk} title="Rimuovi highlight">✕</button>
+        </div>
+      )}
+
+      {/* Banner avviso PDF scansionato — appare e sparisce automaticamente */}
+      <div style={{
+        overflow: "hidden",
+        maxHeight: showScanWarning ? "48px" : "0px",
+        opacity: showScanWarning ? 1 : 0,
+        transition: "max-height 0.3s ease, opacity 0.3s ease",
+        flexShrink: 0,
+      }}>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          padding: "5px 16px",
+          background: "rgba(251,191,36,0.07)",
+          borderBottom: "1px solid rgba(251,191,36,0.2)",
+        }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+            <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span style={{ fontSize: "0.7rem", color: "#fbbf24" }}>
+            PDF scansionato — highlight non disponibile. La pagina è stata navigata correttamente.
+          </span>
+        </div>
+      </div>
+
       {/* PDF */}
-      <div style={s.viewerContent}>
+      <div style={s.viewerContent} ref={viewerContentRef}>
         <Document
           file={url}
           onLoadSuccess={({ numPages }) => setNumPages(numPages)}
           loading={<div style={{ color: "var(--text-muted)", fontSize: "0.82rem", paddingTop: 40 }}>Caricamento PDF…</div>}
           error={<div style={{ color: "#f87171", fontSize: "0.82rem", paddingTop: 40 }}>Impossibile caricare il PDF.</div>}
         >
-          <Page
-            pageNumber={currentPage}
-            scale={scale}
-            renderTextLayer
-            renderAnnotationLayer={false}
-          />
+          <div style={pageWrapStyle}>
+            <Page
+              pageNumber={currentPage}
+              scale={scale}
+              renderTextLayer
+              renderAnnotationLayer={false}
+              customTextRenderer={textRenderer}
+            />
+          </div>
         </Document>
       </div>
     </div>
@@ -449,8 +654,6 @@ function PdfViewer({ filename }) {
 
 // ─────────────────────────────────────────────
 // INGESTION PANEL
-// legge/scrive i job dal Context globale
-// così i log sopravvivono alla navigazione
 // ─────────────────────────────────────────────
 function IngestionPanel({ pdf, onIngested }) {
   const { getJob, startIngestion } = useIngestion();
@@ -503,9 +706,9 @@ function IngestionPanel({ pdf, onIngested }) {
 }
 
 // ─────────────────────────────────────────────
-// CHUNK EXPLORER
+// CHUNK EXPLORER  (ora notifica il chunk attivo verso l'alto)
 // ─────────────────────────────────────────────
-function ChunkExplorer({ filename }) {
+function ChunkExplorer({ filename, onChunkSelect, activeChunkId }) {
   const [chunks, setChunks]     = useState([]);
   const [total, setTotal]       = useState(0);
   const [page, setPage]         = useState(0);
@@ -527,6 +730,17 @@ function ChunkExplorer({ filename }) {
 
   const totalPages = Math.ceil(total / PAGE_SIZE);
 
+  const handleToggle = (i, chunk) => {
+    const isOpening = expanded !== i;
+    setExpanded(isOpening ? i : null);
+    if (isOpening) {
+      // Notifica il chunk selezionato verso AdminPanel
+      onChunkSelect && onChunkSelect(chunk);
+    } else {
+      onChunkSelect && onChunkSelect(null);
+    }
+  };
+
   return (
     <div>
       <div style={s.chunkStats}>
@@ -536,43 +750,93 @@ function ChunkExplorer({ filename }) {
         </span>
       </div>
 
+      {/* Legenda highlight */}
+      {total > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 6,
+          marginBottom: 10, padding: "5px 10px",
+          background: "rgba(255,213,0,0.06)", border: "1px solid rgba(255,213,0,0.18)",
+          borderRadius: 6, fontSize: "0.68rem", color: "var(--text-muted)",
+        }}>
+          <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: 2, background: "rgba(255,213,0,0.55)", flexShrink: 0 }} />
+          Clicca un chunk per evidenziarne il testo nel PDF
+        </div>
+      )}
+
       {loading && <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", padding: 16 }}>Caricamento…</div>}
 
-      {!loading && chunks.map((chunk, i) => (
-        <div key={chunk.id} style={s.chunkItem}>
-          <button style={s.chunkHeader} onClick={() => setExpanded(expanded === i ? null : i)}>
-            <span style={s.chunkIdx}>#{page * PAGE_SIZE + i + 1}</span>
-            <span style={s.chunkPreview}>{chunk.preview}</span>
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
-              style={{ transform: expanded === i ? "rotate(180deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
-              <polyline points="6 9 12 15 18 9"/>
-            </svg>
-          </button>
-          {expanded === i && (
-            <div style={s.chunkBody}>
-              {chunk.text}
-              {chunk.metadata && Object.keys(chunk.metadata).length > 0 && (
-                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap", gap: 4 }}>
-                  {Object.entries(chunk.metadata).map(([k, v]) => v && (
-                    <span key={k} style={{
-                      fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4,
-                      background: "var(--surface)", color: "var(--text-muted)",
-                      border: "1px solid var(--border)",
-                    }}>{k}: {String(v)}</span>
-                  ))}
-                </div>
+      {!loading && chunks.map((chunk, i) => {
+        const isActive = chunk.id === activeChunkId;
+        return (
+          <div key={chunk.id} style={s.chunkItem(isActive)}>
+            <button style={s.chunkHeader(isActive)} onClick={() => handleToggle(i, chunk)}>
+              <span style={s.chunkIdx(isActive)}>#{page * PAGE_SIZE + i + 1}</span>
+              <span style={{ ...s.chunkPreview, color: isActive ? "var(--text)" : "var(--text-dim)" }}>
+                {chunk.preview}
+              </span>
+              {/* Indicatore pagina inline */}
+              {chunk.metadata?.pagina && (
+                <span style={{
+                  fontSize: "0.65rem", fontFamily: "'DM Mono', monospace",
+                  color: isActive ? "var(--accent)" : "var(--text-muted)",
+                  flexShrink: 0, minWidth: 28, textAlign: "right",
+                }}>
+                  p.{chunk.metadata.pagina}
+                </span>
               )}
-            </div>
-          )}
-        </div>
-      ))}
+              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke={isActive ? "var(--accent)" : "var(--text-muted)"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                style={{ transform: expanded === i ? "rotate(180deg)" : "none", transition: "transform 0.15s", flexShrink: 0 }}>
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+
+            {expanded === i && (
+              <div style={s.chunkBody}>
+                {/* Pill navigazione pagina */}
+                {chunk.metadata?.pagina && (
+                  <div
+                    style={s.chunkPagePill}
+                    onClick={() => onChunkSelect && onChunkSelect(chunk)}
+                    title={`Vai a pagina ${chunk.metadata.pagina} nel PDF`}
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                      <polyline points="14 2 14 8 20 8"/>
+                    </svg>
+                    pagina {chunk.metadata.pagina} nel PDF
+                    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                      <line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/>
+                    </svg>
+                  </div>
+                )}
+
+                {/* Testo chunk con parole chiave evidenziate inline */}
+                <HighlightedChunkText text={chunk.text} />
+
+                {/* Metadati */}
+                {chunk.metadata && Object.keys(chunk.metadata).length > 0 && (
+                  <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 4 }}>
+                    {Object.entries(chunk.metadata).map(([k, v]) => v && (
+                      <span key={k} style={{
+                        fontSize: "0.65rem", padding: "2px 6px", borderRadius: 4,
+                        background: "var(--surface)", color: "var(--text-muted)",
+                        border: "1px solid var(--border)",
+                      }}>{k}: {String(v)}</span>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        );
+      })}
 
       {totalPages > 1 && (
         <div style={s.pagination}>
           <button style={{ ...s.pageBtn, opacity: page <= 0 ? 0.3 : 1 }}
-            disabled={page <= 0} onClick={() => fetch_(page - 1)}>← Precedente</button>
+            disabled={page <= 0} onClick={() => { fetch_(page - 1); setExpanded(null); onChunkSelect && onChunkSelect(null); }}>← Precedente</button>
           <button style={{ ...s.pageBtn, opacity: page >= totalPages - 1 ? 0.3 : 1 }}
-            disabled={page >= totalPages - 1} onClick={() => fetch_(page + 1)}>Successiva →</button>
+            disabled={page >= totalPages - 1} onClick={() => { fetch_(page + 1); setExpanded(null); onChunkSelect && onChunkSelect(null); }}>Successiva →</button>
         </div>
       )}
     </div>
@@ -580,9 +844,46 @@ function ChunkExplorer({ filename }) {
 }
 
 // ─────────────────────────────────────────────
-// LOADER PANEL — carica in PostgreSQL + ChromaDB
-// stato (logs, status) vive in IngestionContext
-// così sopravvive alla navigazione
+// HIGHLIGHTED CHUNK TEXT
+// Evidenzia visivamente le parole "significative" del testo del chunk
+// nell'area di testo del ChunkExplorer (lato destro)
+// ─────────────────────────────────────────────
+function HighlightedChunkText({ text }) {
+  if (!text) return null;
+
+  const keyWords = new Set(
+    text
+      .toLowerCase()
+      .replace(/[^\wàèéìîòùü\s]/g, " ")
+      .split(/\s+/)
+      .filter(w => w.length >= 1)
+  );
+
+  const tokens = text.split(/(\s+)/);
+
+  return (
+    <span>
+      {tokens.map((token, i) => {
+        const normalized = token.toLowerCase().replace(/[^\wàèéìîòùü]/g, "");
+        if (normalized.length >= 1 && keyWords.has(normalized)) {
+          return (
+            <mark key={i} style={{
+              background: "#f59e0b",
+              borderRadius: "2px",
+              padding: 0,
+            }}>
+              {token}
+            </mark>
+          );
+        }
+        return token;
+      })}
+    </span>
+  );
+}
+
+// ─────────────────────────────────────────────
+// LOADER PANEL
 // ─────────────────────────────────────────────
 function LoaderPanel({ pdf, onLoaded }) {
   const { getLoaderJob, startLoader, resetLoaderJob } = useIngestion();
@@ -699,12 +1000,11 @@ function LoaderPanel({ pdf, onLoaded }) {
   );
 }
 
-
 // ─────────────────────────────────────────────
-// SYNC PANEL — health check sincronizzazione
+// SYNC PANEL
 // ─────────────────────────────────────────────
 function SyncPanel() {
-  const [docs, setDocs]     = useState([]);
+  const [docs, setDocs]       = useState([]);
   const [loading, setLoading] = useState(false);
 
   const fetch_ = async () => {
@@ -756,9 +1056,8 @@ function SyncPanel() {
   );
 }
 
-
 // ─────────────────────────────────────────────
-// DELETE DIALOG — conferma eliminazione
+// DELETE DIALOG
 // ─────────────────────────────────────────────
 function DeleteDialog({ filename, onConfirm, onCancel }) {
   return (
@@ -779,9 +1078,8 @@ function DeleteDialog({ filename, onConfirm, onCancel }) {
   );
 }
 
-
 // ─────────────────────────────────────────────
-// EDIT PANEL — modifica metadati documento
+// EDIT PANEL
 // ─────────────────────────────────────────────
 function EditPanel({ pdf, onUpdated }) {
   const [tipi, setTipi]         = useState([]);
@@ -794,10 +1092,9 @@ function EditPanel({ pdf, onUpdated }) {
   const [docId, setDocId]       = useState(null);
   const [loading, setLoading]   = useState(false);
   const [fetching, setFetching] = useState(true);
-  const [result, setResult]     = useState(null); // "ok" | "error"
+  const [result, setResult]     = useState(null);
   const [errMsg, setErrMsg]     = useState("");
 
-  // Carica tipi, livelli e metadati attuali
   useEffect(() => {
     setResult(null); setFetching(true);
     Promise.all([
@@ -902,18 +1199,17 @@ function EditPanel({ pdf, onUpdated }) {
   );
 }
 
-
 // ─────────────────────────────────────────────
-// RIGHT PANEL
+// RIGHT PANEL  (ora gestisce activeChunk)
 // ─────────────────────────────────────────────
-function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh }) {
+function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, activeChunkId }) {
   const [activeTab, setActiveTab]   = useState("ingest");
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting]     = useState(false);
 
   useEffect(() => {
     if (!pdf) return;
-    if (pdf.status === "ready")      setActiveTab("loader");
+    if (pdf.status === "ready")          setActiveTab("loader");
     else if (pdf.status === "completed") setActiveTab("chunks");
     else setActiveTab("ingest");
   }, [pdf?.filename]);
@@ -945,11 +1241,11 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh }) {
   }
 
   const allTabs = [
-    { id: "ingest",  label: "Ingestion" },
-    { id: "loader",  label: "Loader",   disabled: pdf.status === "not_ingested" || pdf.status === "processing" },
-    { id: "chunks",  label: "Chunks",   disabled: pdf.status !== "completed" },
-    { id: "modifica",label: "Modifica", disabled: pdf.status !== "completed" },
-    { id: "sync",    label: "Sync" },
+    { id: "ingest",   label: "Ingestion" },
+    { id: "loader",   label: "Loader",   disabled: pdf.status === "not_ingested" || pdf.status === "processing" },
+    { id: "chunks",   label: "Chunks",   disabled: pdf.status !== "completed" },
+    { id: "modifica", label: "Modifica", disabled: pdf.status !== "completed" },
+    { id: "sync",     label: "Sync" },
   ];
 
   return (
@@ -1009,13 +1305,14 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh }) {
           />
         )}
         {activeTab === "chunks" && pdf.status === "completed" && (
-          <ChunkExplorer filename={pdf.filename} />
+          <ChunkExplorer
+            filename={pdf.filename}
+            onChunkSelect={onChunkSelect}
+            activeChunkId={activeChunkId}
+          />
         )}
         {activeTab === "modifica" && pdf.status === "completed" && (
-          <EditPanel
-            pdf={pdf}
-            onUpdated={() => {}}
-          />
+          <EditPanel pdf={pdf} onUpdated={() => {}} />
         )}
         {activeTab === "sync" && (
           <SyncPanel />
@@ -1034,6 +1331,9 @@ export default function AdminPanel() {
   const [leftOpen, setLeftOpen]   = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
 
+  // ── NUOVO: stato chunk attivo condiviso tra ChunkExplorer e PdfViewer ──
+  const [activeChunk, setActiveChunk] = useState(null);
+
   const fetchPdfs = useCallback(async () => {
     try {
       const res  = await fetch(`${API}/api/v1/admin/pdfs`);
@@ -1044,7 +1344,11 @@ export default function AdminPanel() {
 
   useEffect(() => { fetchPdfs(); }, [fetchPdfs]);
 
-
+  // Reset highlight quando cambia documento selezionato
+  const handleSelect = (pdf) => {
+    setSelected(pdf);
+    setActiveChunk(null);
+  };
 
   const handleStatusChange = (filename, newStatus) => {
     setPdfs(prev => prev.map(p => p.filename === filename ? { ...p, status: newStatus } : p));
@@ -1089,6 +1393,30 @@ export default function AdminPanel() {
           </svg>
           Dettagli
         </button>
+
+        {/* NUOVO: indicatore chunk attivo nella topbar */}
+        {activeChunk && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8, marginLeft: "auto",
+            padding: "4px 12px", borderRadius: 6,
+            background: "rgba(79,142,247,0.08)", border: "1px solid rgba(79,142,247,0.2)",
+          }}>
+            <span style={{
+              width: 6, height: 6, borderRadius: "50%", background: "var(--accent)",
+              boxShadow: "0 0 6px var(--accent)", flexShrink: 0,
+            }} />
+            <span style={{ fontSize: "0.72rem", color: "var(--accent)", fontFamily: "'DM Mono', monospace" }}>
+              Highlight attivo
+              {activeChunk.metadata?.pagina && ` · p.${activeChunk.metadata.pagina}`}
+            </span>
+            <button
+              onClick={() => setActiveChunk(null)}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "0.75rem", padding: 0 }}
+            >
+              ✕
+            </button>
+          </div>
+        )}
       </div>
 
       <div style={s.body}>
@@ -1096,14 +1424,18 @@ export default function AdminPanel() {
           <Sidebar
             pdfs={pdfs}
             selected={selected}
-            onSelect={setSelected}
+            onSelect={handleSelect}
             onUploaded={(doc) => setPdfs(prev => prev.find(p => p.filename === doc.filename) ? prev : [...prev, doc])}
             onRefresh={fetchPdfs}
           />
         )}
 
         {selected ? (
-          <PdfViewer filename={selected.filename} />
+          <PdfViewer
+            filename={selected.filename}
+            activeChunk={activeChunk}
+            onClearChunk={() => setActiveChunk(null)}
+          />
         ) : (
           <div style={{ ...s.viewer, ...s.viewerEmpty }}>
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.15 }}>
@@ -1119,9 +1451,12 @@ export default function AdminPanel() {
             pdf={selected}
             onStatusChange={handleStatusChange}
             onRefresh={fetchPdfs}
+            onChunkSelect={setActiveChunk}
+            activeChunkId={activeChunk?.id}
             onDeleted={(filename) => {
               setPdfs(prev => prev.filter(p => p.filename !== filename));
               setSelected(null);
+              setActiveChunk(null);
             }}
           />
         )}
