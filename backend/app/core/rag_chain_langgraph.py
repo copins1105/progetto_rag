@@ -1,17 +1,18 @@
 """
-rag_chain_langgraph.py
+rag_chain_langgraph.py  — v2 (stable-page-refs)
 
-Flusso del grafo:
-  guard_agent → query_agent → routing_agent → retrieval_agent → relevance_check_agent → answer_agent → END
-      |               |                            |                      |
-  end_blocked     end_courtesy              fallback_agent          end_not_found
-  end_courtesy                            (max 1 retry, poi
-                                           end_not_found diretto)
-
-MODIFICA CITAZIONI:
-  Il prompt ora istruisce l'LLM a citare sempre con formato [TITOLO_DOCUMENTO]
-  usando esattamente il valore di titolo_documento presente nel CONTESTO.
-  Questo garantisce che il frontend possa sempre riconoscere e linkare le citazioni.
+MODIFICHE RISPETTO ALLA VERSIONE PRECEDENTE:
+  1. format_docs() ora aggiunge un ID numerico progressivo [C1], [C2], … per ogni chunk.
+     Il prompt spiega all'LLM di citare come [TITOLO|pPAGINA] usando la PAGINA
+     del BLOCCO da cui ha tratto l'informazione, evitando che il modello confonda
+     i numeri di pagina tra chunk diversi.
+  2. _SYSTEM_BASE contiene ora istruzioni rafforzate sul mapping chunk→pagina.
+  3. format_docs() ritorna anche una mappa chunk_id→(titolo, pagina) usata da
+     answer_agent per il log di debug (esposta nello stato come chunk_page_map).
+  4. answer_agent aggiunge al risultato source_docs le informazioni arricchite
+     con la pagina stabile presa dai metadati originali (non dall'LLM).
+  5. FakeAIMessage espone retrieval_debug: lista di dict con titolo, pagina, breadcrumb,
+     preview testo. Chat endpoint può decidere se includerlo nella risposta.
 """
 
 import re
@@ -45,6 +46,8 @@ class AgentState(TypedDict):
     retrieval_query:       str
     context:               str
     source_docs:           List[Document]
+    # NUOVO: mappa chunk_id (intero) → (titolo, pagina) per debug e citazioni stabili
+    chunk_page_map:        dict
     answer:                str
     history:               Annotated[List[BaseMessage], operator.add]
     blocked:               bool
@@ -118,30 +121,56 @@ def _detect_doc_type(docs: List[Document]) -> str:
     return best if scores[best] > 0 else "generico"
 
 
-def format_docs(docs: List[Document]) -> str:
+def format_docs(docs: List[Document]) -> tuple[str, dict]:
+    """
+    Formatta i documenti aggiungendo un ID progressivo [C1], [C2], …
+    Ritorna (contesto_stringa, chunk_page_map).
+
+    chunk_page_map: { chunk_index: {"titolo": str, "pagina": str, "anchor_link": str} }
+    Viene usato per:
+      - istruire l'LLM a citare [TITOLO|pPAGINA] in modo stabile
+      - il debug panel nel frontend
+    """
     if not docs:
-        return ""
-    parts = []
-    for d in docs:
+        return "", {}
+
+    parts         = []
+    chunk_page_map = {}
+
+    for idx, d in enumerate(docs, start=1):
         m         = d.metadata
         titolo    = m.get("titolo_documento", "N/D")
         sezione   = m.get("breadcrumb", "N/D")
         gerarchia = " > ".join(h for h in [m.get("h1",""), m.get("h2",""), m.get("h3","")] if h)
-        pagina    = m.get("pagina", "N/D")
-        keywords  = m.get("keywords", "")
-        link      = m.get("anchor_link", "")
+        # Normalizza pagina: può essere stringa "5", intero 5, o None/"" → "N/D"
+        pagina_raw = m.get("pagina", "")
+        pagina     = str(pagina_raw).strip() if pagina_raw and str(pagina_raw).strip() not in ("", "None", "null") else "N/D"
+        keywords   = m.get("keywords", "")
+        link       = m.get("anchor_link", "")
+
+        # Salva nella mappa stabile
+        chunk_page_map[idx] = {
+            "titolo":      titolo,
+            "pagina":      pagina,
+            "anchor_link": link,
+            "breadcrumb":  sezione,
+            "preview":     d.page_content[:150],
+        }
+
         block = (
+            f"[CHUNK C{idx}]\n"
             f"DOCUMENTO: {titolo}\n"
             f"SEZIONE: {sezione}\n"
             f"GERARCHIA: {gerarchia}\n"
-            f"PAGINA: {pagina}\n"
+            f"PAGINA: {pagina}\n"          # ← pagina normalizzata
             f"KEYWORDS: {keywords}\n"
             f"CONTENUTO:\n{d.page_content}"
         )
         if link:
             block += f"\nLINK DIRETTO: {link}"
         parts.append(block)
-    return "\n\n---\n\n".join(parts)
+
+    return "\n\n---\n\n".join(parts), chunk_page_map
 
 
 def _extract_content_text(context: str) -> str:
@@ -150,7 +179,7 @@ def _extract_content_text(context: str) -> str:
         if line.startswith("CONTENUTO:"):
             in_content = True
             continue
-        if line.startswith("---") or line.startswith("DOCUMENTO:"):
+        if line.startswith("---") or line.startswith("[CHUNK"):
             in_content = False
             continue
         if in_content:
@@ -215,24 +244,28 @@ DISPOSIZIONI DI SICUREZZA:
 
 REGOLE DI RISPOSTA:
 1. Usa SOLO le informazioni del CONTESTO. Non inventare nulla.
-2. Se manca un'informazione: "Non ho trovato i dettagli su [X] nei documenti disponibili. Le sezioni analizzate riguardano [argomenti presenti]."
-3. CITAZIONI — regole fondamentali:
-   - Usa SEMPRE il testo esatto che appare dopo "DOCUMENTO:" nel CONTESTO, senza modificarlo.
-   - Il numero di pagina da citare è quello che appare dopo "PAGINA:" nello stesso blocco del CONTESTO da cui hai tratto l'informazione.
-   - Non inventare documenti o pagine non presenti nel CONTESTO.
-   - QUANDO citare: inserisci la citazione solo a fine paragrafo o dopo un gruppo di affermazioni che provengono dallo stesso documento e dalla stessa pagina. NON ripetere la citazione su ogni riga se le informazioni vengono tutte dalla stessa fonte.
-   - Se le informazioni di un elenco provengono tutte dallo stesso documento e pagina, inserisci la citazione UNA SOLA VOLTA alla fine dell'elenco.
-   - Se affermazioni diverse provengono da documenti o pagine diverse, cita separatamente ciascun gruppo , usando NUMERO_PAGINA del contesto da cui hai tratto l'informazione poiche sono pagine differenti.
-   - Formato citazione: [TITOLO_DOCUMENTO|pNUMERO_PAGINA]
-   - Esempi corretti:
+2. Se manca un'informazione: "Non ho trovato i dettagli su [X] nei documenti disponibili."
+
+3. ══ REGOLE CITAZIONI — FONDAMENTALI ══
+   Il CONTESTO è diviso in blocchi numerati [CHUNK C1], [CHUNK C2], ecc.
+   Ogni blocco ha: DOCUMENTO (es. "ETH-COD-001") e PAGINA (es. "5").
+
+   REGOLA ASSOLUTA: quando citi, usa SEMPRE il DOCUMENTO e la PAGINA
+   del blocco [CHUNK Cn] da cui hai estratto l'informazione specifica.
+   NON usare la pagina di un chunk per un'informazione presa da un altro chunk.
+
+   Formato citazione: [TITOLO_DOCUMENTO|pNUMERO_PAGINA]
+   Esempi corretti:
      "I dipendenti devono rispettare il codice etico. [ETH-COD-001|p3]"
      "I corsi durano 1800 ore e si svolgono a Roma. [BANDO DI SELEZIONE CORSI ITS|p4]"
-   - Esempio lista con fonte unica — cita SOLO in fondo:
-     "I corsi disponibili sono:
-     - Sviluppatore software
-     - Data Manager
-     [BANDO DI SELEZIONE CORSI ITS|p4]"
-4. NON aggiungere una sezione "FONTI CONSULTATE" in fondo.
+
+   Quando citare:
+   - Inserisci la citazione a fine paragrafo o dopo un gruppo di affermazioni
+     che provengono dallo STESSO chunk.
+   - Se affermazioni diverse vengono da chunk diversi, cita ogni gruppo
+     con la sua citazione specifica.
+   - Per un elenco con fonte unica cita UNA SOLA VOLTA in fondo all'elenco.
+   - NON aggiungere sezioni "FONTI CONSULTATE" in fondo alla risposta.
 
 {tipo_istruzioni}
 
@@ -466,12 +499,13 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         query         = state["retrieval_query"]
         filter_titles = state.get("filter_titles")
         try:
-            docs    = _get_retriever(filter_titles).invoke(query)
-            context = format_docs(docs)
+            docs               = _get_retriever(filter_titles).invoke(query)
+            context, page_map  = format_docs(docs)       # ← NUOVO: tuple
         except Exception as e:
             logger.error(f"[retrieval_agent] Errore: {e}")
-            docs, context = [], ""
-        return {**state, "context": context, "source_docs": docs, "context_relevant": False}
+            docs, context, page_map = [], "", {}
+        return {**state, "context": context, "source_docs": docs,
+                "chunk_page_map": page_map, "context_relevant": False}
 
     def relevance_check_agent(state: AgentState) -> AgentState:
         ctx = state["context"]
@@ -479,7 +513,6 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             return {**state, "context_relevant": False}
 
         context_preview = _extract_content_text(ctx)[:800]
-        verdict  = "ERROR"
         relevant = True
         try:
             verdict  = _relevance_chain.invoke({
@@ -505,15 +538,16 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
         filter_titles = state.get("filter_titles") if retry < MAX_RETRIES else None
 
         try:
-            docs    = _get_retriever(filter_titles).invoke(rephrased)
-            context = format_docs(docs)
+            docs              = _get_retriever(filter_titles).invoke(rephrased)
+            context, page_map = format_docs(docs)
         except Exception as e:
             logger.error(f"[fallback_agent] Errore: {e}")
-            docs, context = [], ""
+            docs, context, page_map = [], "", {}
 
         return {**state,
                 "context":          context,
                 "source_docs":      docs,
+                "chunk_page_map":   page_map,
                 "retry_count":      retry,
                 "retrieval_query":  rephrased,
                 "filter_titles":    filter_titles,
@@ -638,6 +672,7 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
                 "retrieval_query":      inputs.get("question", ""),
                 "context":              "",
                 "source_docs":          [],
+                "chunk_page_map":       {},
                 "answer":               "",
                 "history":              inputs.get("history", []),
                 "blocked":              False,
@@ -654,6 +689,7 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
                 content=result["answer"],
                 source_docs=result.get("source_docs", []),
                 conversation_summary=result.get("conversation_summary", ""),
+                chunk_page_map=result.get("chunk_page_map", {}),
             )
 
     return _GraphChain(graph)
@@ -663,10 +699,35 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
 # FakeAIMessage
 # ═══════════════════════════════════════════════════════════════
 class FakeAIMessage:
-    def __init__(self, content: str, source_docs: List[Document] = None, conversation_summary: str = ""):
+    def __init__(
+        self,
+        content: str,
+        source_docs: List[Document] = None,
+        conversation_summary: str = "",
+        chunk_page_map: dict = None,
+    ):
         self.content              = content
         self.source_docs          = source_docs or []
         self.conversation_summary = conversation_summary
+        # chunk_page_map: { chunk_idx: {titolo, pagina, anchor_link, breadcrumb, preview} }
+        self.chunk_page_map       = chunk_page_map or {}
+
+    def build_retrieval_debug(self) -> list:
+        """
+        Costruisce la lista di debug chunk da esporre al frontend.
+        Usa i metadati originali (non l'output LLM) per i numeri di pagina.
+        """
+        debug = []
+        for idx, info in self.chunk_page_map.items():
+            debug.append({
+                "chunk_idx":   idx,
+                "titolo":      info["titolo"],
+                "pagina":      info["pagina"],
+                "anchor_link": info["anchor_link"],
+                "breadcrumb":  info["breadcrumb"],
+                "preview":     info["preview"],
+            })
+        return debug
 
     def __str__(self) -> str:
         return self.content
