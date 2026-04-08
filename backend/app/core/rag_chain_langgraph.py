@@ -250,21 +250,29 @@ REGOLE DI RISPOSTA:
    Il CONTESTO è diviso in blocchi numerati [CHUNK C1], [CHUNK C2], ecc.
    Ogni blocco ha: DOCUMENTO (es. "ETH-COD-001") e PAGINA (es. "5").
 
-   REGOLA ASSOLUTA: quando citi, usa SEMPRE il DOCUMENTO e la PAGINA
-   del blocco [CHUNK Cn] da cui hai estratto l'informazione specifica.
-   NON usare la pagina di un chunk per un'informazione presa da un altro chunk.
+   FORMATO CITAZIONE — REGOLA ASSOLUTA:
+   [TITOLO_DOCUMENTO|pNUMERO]  ← UN solo numero intero, niente virgole, niente intervalli
 
-   Formato citazione: [TITOLO_DOCUMENTO|pNUMERO_PAGINA]
-   Esempi corretti:
-     "I dipendenti devono rispettare il codice etico. [ETH-COD-001|p3]"
-     "I corsi durano 1800 ore e si svolgono a Roma. [BANDO DI SELEZIONE CORSI ITS|p4]"
+   ESEMPI CORRETTI:
+   "I dipendenti devono rispettare il codice etico. [ETH-COD-001|p3]"
+   "I corsi durano 1800 ore. [BANDO DI SELEZIONE CORSI ITS|p1]"
+
+   ESEMPI VIETATI SEMPRE — non usare mai questi formati:
+   [BANDO DI SELEZIONE CORSI ITS|p3, p5]   ← VIETATO: virgole
+   [BANDO DI SELEZIONE CORSI ITS|p3-p5]    ← VIETATO: intervalli
+   [BANDO DI SELEZIONE CORSI ITS]           ← VIETATO: senza pagina
+
+   Se informazioni diverse vengono da pagine diverse dello stesso documento,
+   inserisci DUE citazioni separate, una per gruppo:
+   "testo da p3 [BANDO ITS|p3] e testo da p5 [BANDO ITS|p5]"
 
    Quando citare:
+   - Per un ELENCO dove tutti gli elementi vengono dallo stesso chunk:
+     inserisci UNA SOLA citazione DOPO l'ultimo elemento. MAI una per riga.
    - Inserisci la citazione a fine paragrafo o dopo un gruppo di affermazioni
-     che provengono dallo STESSO chunk.
+     dello stesso chunk.
    - Se affermazioni diverse vengono da chunk diversi, cita ogni gruppo
      con la sua citazione specifica.
-   - Per un elenco con fonte unica cita UNA SOLA VOLTA in fondo all'elenco.
    - NON aggiungere sezioni "FONTI CONSULTATE" in fondo alla risposta.
 
 {tipo_istruzioni}
@@ -279,6 +287,7 @@ _TIPO_ISTRUZIONI = {
         "- Riporta avvertenze, note e prerequisiti esattamente come nel documento.\n"
         "- Se una procedura ha condizioni (SE... ALLORA...), riportale chiaramente.\n"
         "- Non sintetizzare passaggi che potrebbero essere critici per correttezza operativa."
+        "- Se ci sono tabelle di parametri o configurazioni, riportale SEMPRE in formato Markdown completo, senza omettere righe o colonne."
     ),
     "policy": (
         "ISTRUZIONI PER POLICY / REGOLAMENTI HR:\n"
@@ -286,18 +295,19 @@ _TIPO_ISTRUZIONI = {
         "- Se esistono eccezioni o casi particolari, menzionali esplicitamente.\n"
         "- Per benefit e rimborsi, indica sempre importo massimo e condizioni di accesso.\n"
         "- Usa elenchi puntati per requisiti e condizioni."
+        "- Se ci sono tabelle di benefit, permessi o livelli, riportale SEMPRE in formato Markdown completo , senza omettere righe o colonne."
     ),
     "bando": (
         "ISTRUZIONI PER BANDI / CONTRATTI / NORMATIVE:\n"
         "- Evidenzia scadenze e date limite in grassetto.\n"
         "- Per requisiti di ammissione usa un elenco puntato esaustivo.\n"
-        "- Se ci sono tabelle di punteggi o graduatorie, riportale in Markdown completo.\n"
+        "- Se ci sono tabelle di punteggi o graduatorie, riportale SEMPRE in Markdown completo.\n"
         "- Cita articoli o paragrafi specifici quando presenti nel documento."
     ),
     "generico": (
         "FORMATTAZIONE:\n"
         "- Usa elenchi puntati per requisiti, numerati per procedure cronologiche.\n"
-        "- Riporta tabelle in formato Markdown con tutte le righe.\n"
+        "- Riporta SEMPRE tabelle in formato Markdown con tutte le righe se presenti.\n"
         "- Riporta soglie, date e numeri esattamente come nel documento."
     ),
 }
