@@ -1,52 +1,56 @@
 # app/api/v1/auth.py
 """
-Router autenticazione — OAuth2 standard + Refresh Token
-========================================================
+Router autenticazione — OAuth2 + JWT con permessi RBAC
+======================================================
 
-ENDPOINT:
-  POST /api/v1/auth/token          → login OAuth2 standard
-  POST /api/v1/auth/refresh        → rinnova access token
-  POST /api/v1/auth/logout         → logout (revoca refresh token)
-  POST /api/v1/auth/logout-all     → logout da tutti i device
-  GET  /api/v1/auth/me             → profilo utente corrente
-  PUT  /api/v1/auth/me/password    → cambio password
-  GET  /api/v1/auth/users          → lista utenti (Admin+)
-  POST /api/v1/auth/users          → crea utente (Admin+)
-  PUT  /api/v1/auth/users/{id}     → modifica utente (Admin+)
-  DELETE /api/v1/auth/users/{id}   → elimina utente (Admin+)
-
-NOTA SUL FORMATO LOGIN:
-  OAuth2 standard usa application/x-www-form-urlencoded
-  (non JSON) per il login. FastAPI lo gestisce con
-  OAuth2PasswordRequestForm. Il campo si chiama "username"
-  per standard — noi ci mettiamo l'email.
-  Questo abilita il bottone Authorize in /docs.
+NOVITÀ RISPETTO ALLA VERSIONE PRECEDENTE:
+  - JWT ora include campo 'permissions': lista codici_permesso effettivi
+  - Endpoint GET  /api/v1/auth/permissions        → matrice completa
+  - Endpoint PUT  /api/v1/auth/permissions/{id}   → salva override utente
+  - Endpoint DELETE /api/v1/auth/permissions/{id}/{cod} → rimuove override
+  - Endpoint GET  /api/v1/auth/permissions/codici → lista tutti i permessi
 """
 
 import logging
-from fastapi import (
-    APIRouter, Depends, HTTPException, Request,
-    Response, status
-)
+import json as _json
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel, EmailStr, field_validator
+from sqlalchemy import text as _text
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 
 from app.db.session import get_db
 from app.services.auth_service import (
     hash_password, verify_password,
-    create_access_token,
+    create_access_token, resolve_permissions,
     generate_refresh_token, save_refresh_token,
     verify_refresh_token, revoke_refresh_token,
     revoke_all_refresh_tokens,
     set_refresh_cookie, clear_refresh_cookie,
     get_refresh_token_from_cookie,
-    get_current_user, require_admin,
+    get_current_user, require_admin, require_permission,
 )
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+
+# ─────────────────────────────────────────────
+# HELPER: log attività
+# ─────────────────────────────────────────────
+
+def _log(db: Session, utente_id, azione: str, dettaglio: dict = None,
+         ip_address: str = None, esito: str = "ok"):
+    try:
+        db.execute(_text(
+            "INSERT INTO Activity_Log (utente_id, azione, dettaglio, ip_address, esito) "
+            "VALUES (:uid, :azione, :det::jsonb, :ip, :esito)"
+        ), {"uid": utente_id, "azione": azione,
+            "det": _json.dumps(dettaglio or {}), "ip": ip_address, "esito": esito})
+        db.commit()
+    except Exception as e:
+        logger.warning(f"_log fallito ({azione}): {e}")
 
 
 # ─────────────────────────────────────────────
@@ -86,6 +90,19 @@ class UpdateUserRequest(BaseModel):
     ruolo:   Optional[str] = None
 
 
+class PermessoOverrideRequest(BaseModel):
+    """Corpo per impostare un override su un singolo permesso."""
+    codice_permesso: str
+    concesso:        bool
+
+
+class BulkPermessoRequest(BaseModel):
+    """Corpo per salvare tutti gli override di un utente in una volta."""
+    overrides: List[dict]
+    # Lista di { codice_permesso: str, concesso: bool | None }
+    # None = rimuove l'override (torna al default del ruolo)
+
+
 # ─────────────────────────────────────────────
 # HELPER: serializza utente con ruoli
 # ─────────────────────────────────────────────
@@ -113,7 +130,7 @@ def _user_dict(user, db: Session) -> dict:
 
 
 # ─────────────────────────────────────────────
-# LOGIN — OAuth2 standard
+# LOGIN
 # ─────────────────────────────────────────────
 
 @router.post("/token")
@@ -123,67 +140,53 @@ def login(
     form:     OAuth2PasswordRequestForm = Depends(),
     db:       Session = Depends(get_db),
 ):
-    """
-    Login OAuth2 standard.
-
-    FORMATO RICHIESTA (application/x-www-form-urlencoded):
-      username=mario@azienda.it&password=Secret123
-
-    Il campo si chiama "username" per standard OAuth2
-    ma noi ci inseriamo l'email.
-
-    RISPOSTA:
-      Body JSON: { access_token, token_type, user }
-      Cookie:    refresh_token (httpOnly, non visibile in JSON)
-
-    Il frontend salva access_token in memoria JS.
-    Il browser gestisce il cookie refresh automaticamente.
-    """
     from app.models.rag_models import Utente
 
-    # Messaggio generico — non rivela se l'email esiste
-    error = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Email o password non corretti.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+    ip = request.client.host if request.client else None
 
     user = db.query(Utente).filter(Utente.email == form.username).first()
     if not user or not verify_password(form.password, user.password_hash):
         logger.warning(f"Login fallito: {form.username}")
-        raise error
+        _log(db, None, "login",
+             {"email": form.username, "motivo": "credenziali errate"}, ip, esito="error")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Email o password non corretti.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-    profile = _user_dict(user, db)
+    profile     = _user_dict(user, db)
+    # ── Risolvi permessi effettivi e inseriscili nel JWT ──
+    permissions = resolve_permissions(user.utente_id, db)
 
-    # Access token JWT (15 min)
     access_token = create_access_token({
-        "sub":         user.email,
-        "is_admin":    profile["is_admin"],
+        "sub":           user.email,
+        "is_admin":      profile["is_admin"],
         "is_superadmin": profile["is_superadmin"],
-        "role":        profile["role"],
+        "role":          profile["role"],
+        "permissions":   permissions,          # ← NUOVO
     })
 
-    # Refresh token (30 giorni) → DB + cookie httpOnly
     refresh_token = generate_refresh_token()
-    save_refresh_token(
-        db         = db,
-        utente_id  = user.utente_id,
-        token      = refresh_token,
-        ip_address = request.client.host if request.client else None,
-        user_agent = request.headers.get("user-agent"),
-    )
+    save_refresh_token(db=db, utente_id=user.utente_id, token=refresh_token,
+                       ip_address=ip, user_agent=request.headers.get("user-agent"))
     set_refresh_cookie(response, refresh_token)
 
-    logger.info(f"Login OK: {user.email} [{profile['role']}]")
+    _log(db, user.utente_id, "login",
+         {"email": user.email, "ruolo": profile["role"],
+          "n_permessi": len(permissions)}, ip)
+
+    logger.info(f"Login OK: {user.email} [{profile['role']}] ({len(permissions)} permessi)")
     return {
         "access_token": access_token,
         "token_type":   "bearer",
         "user":         profile,
+        "permissions":  permissions,           # ← anche nel body per il frontend
     }
 
 
 # ─────────────────────────────────────────────
-# REFRESH — rinnova access token
+# REFRESH
 # ─────────────────────────────────────────────
 
 @router.post("/refresh")
@@ -192,64 +195,43 @@ def refresh_token_endpoint(
     response: Response,
     db:       Session = Depends(get_db),
 ):
-    """
-    Rinnova l'access token usando il refresh token dal cookie.
-
-    FLUSSO (TOKEN ROTATION):
-      1. Legge refresh token dal cookie httpOnly
-      2. Verifica nel DB (esiste? non revocato? non scaduto?)
-      3. Revoca il vecchio refresh token (rotation)
-      4. Crea un nuovo refresh token e lo salva
-      5. Emette nuovo access token JWT
-      6. Imposta nuovo cookie con nuovo refresh token
-
-    TOKEN ROTATION = ogni refresh genera un nuovo refresh token.
-    Se un refresh token viene rubato e usato una seconda volta,
-    il sistema lo rileva (già revocato) e può allertare.
-    """
     from app.models.rag_models import Utente
 
     token = get_refresh_token_from_cookie(request)
     if not token:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Nessun refresh token. Effettua il login.",
-        )
+        raise HTTPException(status_code=401, detail="Nessun refresh token. Effettua il login.")
 
-    # Verifica il vecchio token
     rt   = verify_refresh_token(db, token)
     user = db.query(Utente).filter(Utente.utente_id == rt.utente_id).first()
     if not user:
         raise HTTPException(status_code=401, detail="Utente non trovato.")
 
-    # TOKEN ROTATION: revoca il vecchio
+    # TOKEN ROTATION
     rt.revocato = True
     db.commit()
 
-    profile = _user_dict(user, db)
+    profile     = _user_dict(user, db)
+    # ── Permessi aggiornati al momento del refresh ──
+    permissions = resolve_permissions(user.utente_id, db)
 
-    # Nuovo access token
     new_access = create_access_token({
         "sub":           user.email,
         "is_admin":      profile["is_admin"],
         "is_superadmin": profile["is_superadmin"],
         "role":          profile["role"],
+        "permissions":   permissions,          # ← NUOVO
     })
 
-    # Nuovo refresh token
     new_refresh = generate_refresh_token()
-    save_refresh_token(
-        db         = db,
-        utente_id  = user.utente_id,
-        token      = new_refresh,
-        ip_address = request.client.host if request.client else None,
-        user_agent = request.headers.get("user-agent"),
-    )
+    save_refresh_token(db=db, utente_id=user.utente_id, token=new_refresh,
+                       ip_address=request.client.host if request.client else None,
+                       user_agent=request.headers.get("user-agent"))
     set_refresh_cookie(response, new_refresh)
 
     return {
         "access_token": new_access,
         "token_type":   "bearer",
+        "permissions":  permissions,
     }
 
 
@@ -258,75 +240,53 @@ def refresh_token_endpoint(
 # ─────────────────────────────────────────────
 
 @router.post("/logout")
-def logout(
-    request:  Request,
-    response: Response,
-    db:       Session = Depends(get_db),
-):
-    """
-    Logout da questo device.
-    Revoca il refresh token dal DB e cancella il cookie.
-    L'access token rimane valido per i suoi 15 minuti residui
-    (accettabile — per revoca immediata usa logout-all).
-    """
+def logout(request: Request, response: Response, db: Session = Depends(get_db)):
+    ip    = request.client.host if request.client else None
     token = get_refresh_token_from_cookie(request)
+
+    utente_id = None
     if token:
+        try:
+            from app.models.rag_models import RefreshToken
+            from app.services.auth_service import hash_refresh_token
+            rt = db.query(RefreshToken).filter_by(
+                token_hash=hash_refresh_token(token), revocato=False).first()
+            if rt:
+                utente_id = rt.utente_id
+        except Exception:
+            pass
         revoke_refresh_token(db, token)
+
     clear_refresh_cookie(response)
+    _log(db, utente_id, "logout", {}, ip)
     return {"status": "ok", "message": "Logout effettuato."}
 
 
 @router.post("/logout-all")
-def logout_all(
-    request:      Request,
-    response:     Response,
-    current_user  = Depends(get_current_user),
-    db: Session   = Depends(get_db),
-):
-    """
-    Logout da TUTTI i device.
-    Revoca tutti i refresh token dell'utente.
-    Utile dopo cambio password o sospetta compromissione.
-    """
+def logout_all(request: Request, response: Response,
+               current_user=Depends(get_current_user), db: Session=Depends(get_db)):
     count = revoke_all_refresh_tokens(db, current_user.utente_id)
     clear_refresh_cookie(response)
-    logger.info(f"Logout-all: {current_user.email}, {count} token revocati")
-    return {
-        "status":  "ok",
-        "message": f"Disconnesso da {count} device.",
-    }
+    ip = request.client.host if request.client else None
+    _log(db, current_user.utente_id, "logout",
+         {"tipo": "logout_all", "sessioni_terminate": count}, ip)
+    return {"status": "ok", "message": f"Disconnesso da {count} device."}
 
 
 # ─────────────────────────────────────────────
-# PROFILO UTENTE CORRENTE
+# PROFILO E CAMBIO PASSWORD
 # ─────────────────────────────────────────────
 
 @router.get("/me")
-def get_me(
-    current_user = Depends(get_current_user),
-    db: Session  = Depends(get_db),
-):
+def get_me(current_user=Depends(get_current_user), db: Session=Depends(get_db)):
     return _user_dict(current_user, db)
 
 
-# ─────────────────────────────────────────────
-# CAMBIO PASSWORD
-# ─────────────────────────────────────────────
-
 @router.put("/me/password")
-def change_password(
-    request:      Request,
-    response:     Response,
-    body:         ChangePasswordRequest,
-    current_user  = Depends(get_current_user),
-    db: Session   = Depends(get_db),
-):
-    """
-    Cambia password e revoca tutti i refresh token.
-    Forza il re-login su tutti i device — comportamento corretto
-    per sicurezza: dopo cambio password, le sessioni precedenti
-    non devono essere più valide.
-    """
+def change_password(request: Request, response: Response,
+                    body: ChangePasswordRequest,
+                    current_user=Depends(get_current_user),
+                    db: Session=Depends(get_db)):
     if not verify_password(body.current_password, current_user.password_hash):
         raise HTTPException(400, detail="La password attuale non è corretta.")
     if body.current_password == body.new_password:
@@ -334,38 +294,31 @@ def change_password(
 
     current_user.password_hash = hash_password(body.new_password)
     db.commit()
-
-    # Revoca tutti i token → logout forzato da tutti i device
     count = revoke_all_refresh_tokens(db, current_user.utente_id)
     clear_refresh_cookie(response)
 
-    logger.info(f"Password cambiata: {current_user.email}, {count} sessioni terminate")
-    return {
-        "status":  "ok",
-        "message": f"Password aggiornata. {count} sessioni terminate.",
-    }
+    ip = request.client.host if request.client else None
+    _log(db, current_user.utente_id, "password_changed",
+         {"sessioni_terminate": count}, ip)
+    return {"status": "ok", "message": f"Password aggiornata. {count} sessioni terminate."}
 
 
 # ─────────────────────────────────────────────
-# GESTIONE UTENTI (solo Admin+)
+# GESTIONE UTENTI (Admin+)
 # ─────────────────────────────────────────────
 
 @router.get("/users")
-def list_users(
-    admin    = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+def list_users(admin=Depends(require_permission("user_view")),
+               db: Session=Depends(get_db)):
     from app.models.rag_models import Utente
     users = db.query(Utente).order_by(Utente.data_creazione.desc()).all()
     return {"users": [_user_dict(u, db) for u in users]}
 
 
 @router.post("/users", status_code=201)
-def create_user(
-    body:    CreateUserRequest,
-    admin    = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+def create_user(request: Request, body: CreateUserRequest,
+                admin=Depends(require_permission("user_create")),
+                db: Session=Depends(get_db)):
     from app.models.rag_models import Utente, Ruolo, Utente_Ruolo
 
     if db.query(Utente).filter(Utente.email == body.email).first():
@@ -375,28 +328,23 @@ def create_user(
     if not ruolo:
         raise HTTPException(400, detail=f"Ruolo '{body.ruolo}' non trovato.")
 
-    new_user = Utente(
-        email         = body.email,
-        password_hash = hash_password(body.password),
-        nome          = body.nome,
-        cognome       = body.cognome,
-    )
+    new_user = Utente(email=body.email, password_hash=hash_password(body.password),
+                      nome=body.nome, cognome=body.cognome)
     db.add(new_user)
     db.flush()
     db.add(Utente_Ruolo(utente_id=new_user.utente_id, ruolo_id=ruolo.ruolo_id))
     db.commit()
 
-    logger.info(f"Utente creato da {admin.email}: {new_user.email} [{body.ruolo}]")
+    ip = request.client.host if request.client else None
+    _log(db, admin.utente_id, "user_created",
+         {"target_email": body.email, "ruolo": body.ruolo}, ip)
     return {"status": "created", "user": _user_dict(new_user, db)}
 
 
 @router.put("/users/{utente_id}")
-def update_user(
-    utente_id: int,
-    body:      UpdateUserRequest,
-    admin      = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+def update_user(utente_id: int, request: Request, body: UpdateUserRequest,
+                admin=Depends(require_permission("user_update")),
+                db: Session=Depends(get_db)):
     from app.models.rag_models import Utente, Ruolo, Utente_Ruolo
 
     user = db.query(Utente).filter(Utente.utente_id == utente_id).first()
@@ -414,15 +362,17 @@ def update_user(
         db.add(Utente_Ruolo(utente_id=utente_id, ruolo_id=ruolo.ruolo_id))
 
     db.commit()
+
+    ip = request.client.host if request.client else None
+    _log(db, admin.utente_id, "user_updated",
+         {"target_email": user.email, "nuovo_ruolo": body.ruolo}, ip)
     return {"status": "ok", "user": _user_dict(user, db)}
 
 
 @router.delete("/users/{utente_id}")
-def delete_user(
-    utente_id: int,
-    admin      = Depends(require_admin),
-    db: Session = Depends(get_db),
-):
+def delete_user(utente_id: int, request: Request,
+                admin=Depends(require_permission("user_delete")),
+                db: Session=Depends(get_db)):
     from app.models.rag_models import Utente
 
     if utente_id == admin.utente_id:
@@ -432,7 +382,273 @@ def delete_user(
     if not user:
         raise HTTPException(404, detail="Utente non trovato.")
 
+    email = user.email
     db.delete(user)
     db.commit()
-    logger.info(f"Utente eliminato da {admin.email}: {user.email}")
-    return {"status": "deleted", "email": user.email}
+
+    ip = request.client.host if request.client else None
+    _log(db, admin.utente_id, "user_deleted",
+         {"target_email": email, "target_id": utente_id}, ip)
+    return {"status": "deleted", "email": email}
+
+
+# ─────────────────────────────────────────────
+# MATRICE PERMESSI — lettura
+# ─────────────────────────────────────────────
+
+@router.get("/permissions")
+def get_permission_matrix(
+    admin=Depends(require_permission("user_permissions")),
+    db: Session=Depends(get_db),
+):
+    """
+    Restituisce la matrice completa: ogni utente con tutti i permessi,
+    indicando fonte (ruolo/override_grant/override_deny/negato) e valore effettivo.
+
+    Formato risposta:
+    {
+      "permessi": ["page_chat", "doc_upload", ...],  ← lista ordinata
+      "utenti": [
+        {
+          "utente_id": 1,
+          "email": "mario@...",
+          "nome": "Mario",
+          "ruolo": "Admin",
+          "permessi": {
+            "page_chat":   { "effettivo": true,  "fonte": "ruolo" },
+            "doc_upload":  { "effettivo": false,  "fonte": "override_deny" },
+            ...
+          }
+        }
+      ]
+    }
+    """
+    # Tutti i permessi ordinati per categoria
+    tutti_permessi = db.execute(_text(
+        "SELECT codice_permesso, descrizione FROM Permesso ORDER BY codice_permesso"
+    )).fetchall()
+
+    codici = [p.codice_permesso for p in tutti_permessi]
+
+    # Matrice completa dalla view
+    righe = db.execute(_text("""
+        SELECT
+            utente_id, email, nome, cognome, ruolo,
+            codice_permesso, effettivo, fonte
+        FROM v_matrice_permessi
+        ORDER BY email, codice_permesso
+    """)).fetchall()
+
+    # Raggruppa per utente
+    utenti_map: dict = {}
+    for r in righe:
+        uid = r.utente_id
+        if uid not in utenti_map:
+            utenti_map[uid] = {
+                "utente_id": uid,
+                "email":     r.email,
+                "nome":      r.nome or "",
+                "cognome":   r.cognome or "",
+                "ruolo":     r.ruolo or "—",
+                "permessi":  {},
+            }
+        utenti_map[uid]["permessi"][r.codice_permesso] = {
+            "effettivo": bool(r.effettivo),
+            "fonte":     r.fonte,
+        }
+
+    return {
+        "permessi": [
+            {"codice": p.codice_permesso, "descrizione": p.descrizione}
+            for p in tutti_permessi
+        ],
+        "utenti": list(utenti_map.values()),
+    }
+
+
+@router.get("/permissions/codici")
+def get_all_permission_codes(
+    _=Depends(require_permission("user_permissions")),
+    db: Session=Depends(get_db),
+):
+    """Lista di tutti i codici permesso con descrizione."""
+    rows = db.execute(_text(
+        "SELECT codice_permesso, descrizione FROM Permesso ORDER BY codice_permesso"
+    )).fetchall()
+    return {"permessi": [{"codice": r.codice_permesso, "descrizione": r.descrizione} for r in rows]}
+
+
+# ─────────────────────────────────────────────
+# MATRICE PERMESSI — scrittura override
+# ─────────────────────────────────────────────
+
+@router.put("/permissions/{utente_id}")
+def set_user_permission_override(
+    utente_id: int,
+    request:   Request,
+    body:      PermessoOverrideRequest,
+    admin      = Depends(require_permission("user_permissions")),
+    db: Session = Depends(get_db),
+):
+    """
+    Imposta un override individuale per un permesso specifico.
+    Sovrascrive se esiste già, crea se nuovo.
+    """
+    from app.models.rag_models import Utente
+
+    user = db.query(Utente).filter(Utente.utente_id == utente_id).first()
+    if not user:
+        raise HTTPException(404, detail="Utente non trovato.")
+
+    # Trova il permesso_id dal codice
+    perm = db.execute(_text(
+        "SELECT permesso_id FROM Permesso WHERE codice_permesso = :cod"
+    ), {"cod": body.codice_permesso}).fetchone()
+
+    if not perm:
+        raise HTTPException(404, detail=f"Permesso '{body.codice_permesso}' non trovato.")
+
+    # UPSERT: inserisce o aggiorna
+    db.execute(_text("""
+        INSERT INTO Utente_Permesso (utente_id, permesso_id, concesso, aggiornato_da, aggiornato_il)
+        VALUES (:uid, :pid, :concesso, :admin_id, NOW())
+        ON CONFLICT (utente_id, permesso_id)
+        DO UPDATE SET
+            concesso      = EXCLUDED.concesso,
+            aggiornato_da = EXCLUDED.aggiornato_da,
+            aggiornato_il = NOW()
+    """), {
+        "uid":      utente_id,
+        "pid":      perm.permesso_id,
+        "concesso": body.concesso,
+        "admin_id": admin.utente_id,
+    })
+    db.commit()
+
+    # Revoca i refresh token dell'utente modificato
+    # → al prossimo refresh otterrà il JWT con i permessi aggiornati
+    revoke_all_refresh_tokens(db, utente_id)
+
+    ip = request.client.host if request.client else None
+    _log(db, admin.utente_id, "permission_changed", {
+        "target_id":        utente_id,
+        "target_email":     user.email,
+        "codice_permesso":  body.codice_permesso,
+        "concesso":         body.concesso,
+        "tipo":             "override",
+    }, ip)
+
+    return {
+        "status":           "ok",
+        "utente_id":        utente_id,
+        "codice_permesso":  body.codice_permesso,
+        "concesso":         body.concesso,
+        "note":             "Sessioni utente revocate. Il nuovo JWT verrà emesso al prossimo refresh.",
+    }
+
+
+@router.put("/permissions/{utente_id}/bulk")
+def set_user_permissions_bulk(
+    utente_id: int,
+    request:   Request,
+    body:      BulkPermessoRequest,
+    admin      = Depends(require_permission("user_permissions")),
+    db: Session = Depends(get_db),
+):
+    """
+    Salva tutti gli override di un utente in una sola chiamata.
+    Usato dalla matrice admin quando si salvano più permessi insieme.
+
+    body.overrides è una lista di:
+      { "codice_permesso": "doc_upload", "concesso": true/false/null }
+      - true/false → imposta override
+      - null       → rimuove override (torna al default del ruolo)
+    """
+    from app.models.rag_models import Utente
+
+    user = db.query(Utente).filter(Utente.utente_id == utente_id).first()
+    if not user:
+        raise HTTPException(404, detail="Utente non trovato.")
+
+    modificati = 0
+    for item in body.overrides:
+        codice   = item.get("codice_permesso")
+        concesso = item.get("concesso")  # può essere None
+
+        perm = db.execute(_text(
+            "SELECT permesso_id FROM Permesso WHERE codice_permesso = :cod"
+        ), {"cod": codice}).fetchone()
+        if not perm:
+            continue
+
+        if concesso is None:
+            # Rimuovi override → torna al default del ruolo
+            db.execute(_text(
+                "DELETE FROM Utente_Permesso WHERE utente_id=:uid AND permesso_id=:pid"
+            ), {"uid": utente_id, "pid": perm.permesso_id})
+        else:
+            db.execute(_text("""
+                INSERT INTO Utente_Permesso
+                    (utente_id, permesso_id, concesso, aggiornato_da, aggiornato_il)
+                VALUES (:uid, :pid, :concesso, :admin_id, NOW())
+                ON CONFLICT (utente_id, permesso_id)
+                DO UPDATE SET
+                    concesso      = EXCLUDED.concesso,
+                    aggiornato_da = EXCLUDED.aggiornato_da,
+                    aggiornato_il = NOW()
+            """), {"uid": utente_id, "pid": perm.permesso_id,
+                   "concesso": concesso, "admin_id": admin.utente_id})
+        modificati += 1
+
+    db.commit()
+
+    # Revoca sessioni → permessi aggiornati al prossimo refresh
+    revoke_all_refresh_tokens(db, utente_id)
+
+    ip = request.client.host if request.client else None
+    _log(db, admin.utente_id, "permission_changed", {
+        "target_id":    utente_id,
+        "target_email": user.email,
+        "modificati":   modificati,
+        "tipo":         "bulk",
+    }, ip)
+
+    return {
+        "status":    "ok",
+        "utente_id": utente_id,
+        "modificati": modificati,
+        "note":      "Sessioni utente revocate. Il nuovo JWT verrà emesso al prossimo refresh.",
+    }
+
+
+@router.delete("/permissions/{utente_id}/{codice_permesso}")
+def remove_user_permission_override(
+    utente_id:       int,
+    codice_permesso: str,
+    request:         Request,
+    admin            = Depends(require_permission("user_permissions")),
+    db: Session      = Depends(get_db),
+):
+    """Rimuove l'override individuale → l'utente torna al default del ruolo."""
+    perm = db.execute(_text(
+        "SELECT permesso_id FROM Permesso WHERE codice_permesso = :cod"
+    ), {"cod": codice_permesso}).fetchone()
+
+    if not perm:
+        raise HTTPException(404, detail=f"Permesso '{codice_permesso}' non trovato.")
+
+    db.execute(_text(
+        "DELETE FROM Utente_Permesso WHERE utente_id=:uid AND permesso_id=:pid"
+    ), {"uid": utente_id, "pid": perm.permesso_id})
+    db.commit()
+
+    revoke_all_refresh_tokens(db, utente_id)
+
+    ip = request.client.host if request.client else None
+    _log(db, admin.utente_id, "permission_changed", {
+        "target_id":       utente_id,
+        "codice_permesso": codice_permesso,
+        "tipo":            "remove_override",
+    }, ip)
+
+    return {"status": "ok", "rimosso": codice_permesso}

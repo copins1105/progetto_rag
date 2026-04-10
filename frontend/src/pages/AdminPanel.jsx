@@ -1,22 +1,20 @@
 // src/pages/AdminPanel.jsx
-// Identico all'originale ma tutti i fetch() sono sostituiti con authFetch()
-// e i metodi loader usano i nuovi nomi da IngestionContext.
-
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useIngestion } from "../context/IngestionContext";
-import { useAuth } from "../context/AuthContext";          // ← NUOVO
+import { useAuth } from "../context/AuthContext";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import UserManagementPanel from "./UserManagementPanel";
+import ActivityLogPanel from "./ActivityLogPanel";
+import PermissionMatrixPanel from "./PermissionMatrixPanel";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 const API = "http://127.0.0.1:8080";
-const WS  = "ws://127.0.0.1:8080";
 
 // ─────────────────────────────────────────────
-// STILI (invariati)
+// STILI
 // ─────────────────────────────────────────────
 const s = {
   root: { display: "flex", flexDirection: "column", height: "100%", background: "var(--bg)", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", overflow: "hidden" },
@@ -51,8 +49,8 @@ const s = {
   rightSize: { fontSize: "0.7rem", color: "var(--text-muted)" },
   rightBody: { flex: 1, overflowY: "auto", padding: "16px" },
   rightEmpty: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-muted)", gap: 8, padding: 24 },
-  tabs: { display: "flex", borderBottom: "1px solid var(--border)", padding: "0 16px", flexShrink: 0 },
-  tab: (active) => ({ fontSize: "0.78rem", fontWeight: 500, padding: "10px 0", marginRight: 20, background: "none", border: "none", cursor: "pointer", color: active ? "var(--accent)" : "var(--text-muted)", borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent", transition: "all 0.15s" }),
+  tabs: { display: "flex", borderBottom: "1px solid var(--border)", padding: "0 16px", flexShrink: 0, overflowX: "auto" },
+  tab: (active) => ({ fontSize: "0.78rem", fontWeight: 500, padding: "10px 0", marginRight: 16, background: "none", border: "none", cursor: "pointer", color: active ? "var(--accent)" : "var(--text-muted)", borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent", transition: "all 0.15s", whiteSpace: "nowrap" }),
   ingestBtn: { width: "100%", padding: "10px", background: "var(--accent)", color: "white", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.85rem", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "opacity 0.2s", marginBottom: 12 },
   successBanner: { background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: "8px", padding: "10px 14px", fontSize: "0.82rem", color: "#34d399", display: "flex", alignItems: "center", gap: 8, marginBottom: 12 },
   errorBanner: { background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: "8px", padding: "10px 14px", fontSize: "0.82rem", color: "#f87171", display: "flex", alignItems: "center", gap: 8, marginBottom: 12 },
@@ -100,7 +98,7 @@ function Badge({ status }) {
 }
 
 // ─────────────────────────────────────────────
-// UPLOAD ZONE — usa authFetch
+// UPLOAD ZONE
 // ─────────────────────────────────────────────
 function UploadZone({ onUploaded }) {
   const { authFetch } = useAuth();
@@ -114,19 +112,11 @@ function UploadZone({ onUploaded }) {
     const fd = new FormData();
     fd.append("file", file);
     try {
-      // authFetch con FormData: non impostare Content-Type (lo fa il browser)
-      const res  = await authFetch(`/api/v1/admin/upload`, {
-        method:  "POST",
-        body:    fd,
-        headers: {},   // sovrascrive il Content-Type: application/json di default
-      });
+      const res  = await authFetch(`/api/v1/admin/upload`, { method: "POST", body: fd, headers: {} });
       const data = await res.json();
       onUploaded(data);
-    } catch (e) {
-      console.error("Upload error:", e);
-    } finally {
-      setUploading(false);
-    }
+    } catch (e) { console.error("Upload error:", e); }
+    finally { setUploading(false); }
   };
 
   return (
@@ -149,7 +139,7 @@ function UploadZone({ onUploaded }) {
 }
 
 // ─────────────────────────────────────────────
-// SIDEBAR — usa authFetch tramite onRefresh
+// SIDEBAR
 // ─────────────────────────────────────────────
 function Sidebar({ pdfs, selected, onSelect, onUploaded, onRefresh }) {
   return (
@@ -187,7 +177,7 @@ function Sidebar({ pdfs, selected, onSelect, onUploaded, onRefresh }) {
 }
 
 // ─────────────────────────────────────────────
-// PDF VIEWER (invariato — serve solo l'URL con token non necessario per i PDF statici)
+// PDF VIEWER
 // ─────────────────────────────────────────────
 async function pageHasTextLayer(pdfUrl, pageNum) {
   try {
@@ -220,10 +210,10 @@ function makeTextRenderer(highlightSet) {
 }
 
 function PdfViewer({ filename, activeChunk, onClearChunk }) {
-  const [numPages, setNumPages]     = useState(null);
+  const [numPages, setNumPages]       = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
-  const [scale, setScale]           = useState(1.0);
-  const [hasText, setHasText]       = useState(null);
+  const [scale, setScale]             = useState(1.0);
+  const [hasText, setHasText]         = useState(null);
   const [showScanWarning, setShowScanWarning] = useState(false);
   const scanWarningTimer = useRef(null);
   const viewerContentRef = useRef(null);
@@ -239,7 +229,7 @@ function PdfViewer({ filename, activeChunk, onClearChunk }) {
     if (p && p >= 1) setCurrentPage(p);
     setHasText(null);
     pageHasTextLayer(url, targetPage).then(result => setHasText(result));
-  }, [activeChunk]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeChunk]); // eslint-disable-line
 
   useEffect(() => {
     if (hasText === false) {
@@ -345,7 +335,7 @@ function IngestionPanel({ pdf, onIngested }) {
 }
 
 // ─────────────────────────────────────────────
-// CHUNK EXPLORER — usa authFetch
+// CHUNK EXPLORER
 // ─────────────────────────────────────────────
 function ChunkExplorer({ filename, onChunkSelect, activeChunkId }) {
   const { authFetch } = useAuth();
@@ -420,7 +410,7 @@ function ChunkExplorer({ filename, onChunkSelect, activeChunkId }) {
 }
 
 // ─────────────────────────────────────────────
-// LOADER PANEL — usa authFetch tramite IngestionContext
+// LOADER PANEL
 // ─────────────────────────────────────────────
 function LoaderPanel({ pdf, onLoaded }) {
   const { getLoaderJob, startLoader, resetLoaderJob } = useIngestion();
@@ -496,11 +486,11 @@ function LoaderPanel({ pdf, onLoaded }) {
 }
 
 // ─────────────────────────────────────────────
-// SYNC PANEL — usa authFetch
+// SYNC PANEL
 // ─────────────────────────────────────────────
 function SyncPanel() {
   const { authFetch } = useAuth();
-  const [docs, setDocs]     = useState([]);
+  const [docs, setDocs]       = useState([]);
   const [loading, setLoading] = useState(false);
 
   const fetch_ = async () => {
@@ -513,7 +503,7 @@ function SyncPanel() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { fetch_(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { fetch_(); }, []); // eslint-disable-line
 
   return (
     <div>
@@ -558,7 +548,7 @@ function DeleteDialog({ filename, onConfirm, onCancel }) {
 }
 
 // ─────────────────────────────────────────────
-// EDIT PANEL — usa authFetch
+// EDIT PANEL
 // ─────────────────────────────────────────────
 function EditPanel({ pdf, onUpdated }) {
   const { authFetch } = useAuth();
@@ -633,7 +623,7 @@ function EditPanel({ pdf, onUpdated }) {
 // RIGHT PANEL
 // ─────────────────────────────────────────────
 function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, activeChunkId }) {
-  const { authFetch } = useAuth();
+  const { authFetch, hasPermission } = useAuth();
   const [activeTab, setActiveTab]   = useState("ingest");
   const [showDelete, setShowDelete] = useState(false);
   const [deleting, setDeleting]     = useState(false);
@@ -643,7 +633,7 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
     if (pdf.status === "ready")          setActiveTab("loader");
     else if (pdf.status === "completed") setActiveTab("chunks");
     else setActiveTab("ingest");
-  }, [pdf?.filename]);
+  }, [pdf?.filename]); // eslint-disable-line
 
   const handleDelete = async () => {
     setDeleting(true);
@@ -666,14 +656,18 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
     );
   }
 
+  // ── TAB DEFINITION — con controllo permessi ──────────────
   const allTabs = [
-    { id: "ingest",   label: "Ingestion" },
-    { id: "loader",   label: "Loader",   disabled: pdf.status === "not_ingested" || pdf.status === "processing" },
-    { id: "chunks",   label: "Chunks",   disabled: pdf.status !== "completed" },
-    { id: "modifica", label: "Modifica", disabled: pdf.status !== "completed" },
-    { id: "sync",     label: "Sync" },
-    { id: "users",    label: "Utenti" },
-  ];
+    { id: "ingest",      label: "Ingestion",  disabled: false,                                               perm: "tab_ingestion" },
+    { id: "loader",      label: "Loader",     disabled: pdf.status === "not_ingested" || pdf.status === "processing", perm: "tab_loader" },
+    { id: "chunks",      label: "Chunks",     disabled: pdf.status !== "completed",                          perm: "tab_chunks" },
+    { id: "modifica",    label: "Modifica",   disabled: pdf.status !== "completed",                          perm: "tab_modifica" },
+    { id: "sync",        label: "Sync",       disabled: false,                                               perm: "tab_sync" },
+    { id: "log",         label: "Log",        disabled: false,                                               perm: "tab_log" },
+    { id: "users",       label: "Utenti",     disabled: false,                                               perm: "tab_users" },
+    { id: "permissions", label: "Permessi",   disabled: false,                                               perm: "tab_permissions" },
+  // Mostra solo i tab che l'utente può vedere
+  ].filter(t => hasPermission(t.perm));
 
   return (
     <div style={s.right}>
@@ -689,15 +683,31 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
         </div>
       </div>
       <div style={s.tabs}>
-        {allTabs.map(t => <button key={t.id} style={{ ...s.tab(activeTab === t.id), opacity: t.disabled ? 0.35 : 1 }} disabled={t.disabled} onClick={() => !t.disabled && setActiveTab(t.id)}>{t.label}</button>)}
+        {allTabs.map(t => (
+          <button key={t.id}
+            style={{ ...s.tab(activeTab === t.id), opacity: t.disabled ? 0.35 : 1 }}
+            disabled={t.disabled}
+            onClick={() => !t.disabled && setActiveTab(t.id)}
+          >
+            {t.label}
+          </button>
+        ))}
       </div>
-      <div style={s.rightBody}>
-        {activeTab === "ingest"   && <IngestionPanel pdf={pdf} onIngested={() => onStatusChange(pdf.filename, "ready")} />}
-        {activeTab === "loader"   && <LoaderPanel pdf={pdf} onLoaded={() => { onStatusChange(pdf.filename, "completed"); onRefresh(); }} />}
-        {activeTab === "chunks"   && pdf.status === "completed" && <ChunkExplorer filename={pdf.filename} onChunkSelect={onChunkSelect} activeChunkId={activeChunkId} />}
-        {activeTab === "modifica" && pdf.status === "completed" && <EditPanel pdf={pdf} onUpdated={() => {}} />}
-        {activeTab === "sync"     && <SyncPanel />}
-        {activeTab === "users"    && <UserManagementPanel />} 
+
+      {/* ── TAB BODY ── */}
+      <div style={
+        (activeTab === "log" || activeTab === "permissions")
+          ? { flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", minHeight: 0 }
+          : s.rightBody
+      }>
+        {activeTab === "ingest"      && <IngestionPanel pdf={pdf} onIngested={() => onStatusChange(pdf.filename, "ready")} />}
+        {activeTab === "loader"      && <LoaderPanel pdf={pdf} onLoaded={() => { onStatusChange(pdf.filename, "completed"); onRefresh(); }} />}
+        {activeTab === "chunks"      && pdf.status === "completed" && <ChunkExplorer filename={pdf.filename} onChunkSelect={onChunkSelect} activeChunkId={activeChunkId} />}
+        {activeTab === "modifica"    && pdf.status === "completed" && <EditPanel pdf={pdf} onUpdated={() => {}} />}
+        {activeTab === "sync"        && <SyncPanel />}
+        {activeTab === "log"         && <ActivityLogPanel />}
+        {activeTab === "users"       && <UserManagementPanel />}
+        {activeTab === "permissions" && <PermissionMatrixPanel />}
       </div>
     </div>
   );
@@ -708,9 +718,9 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
 // ─────────────────────────────────────────────
 export default function AdminPanel() {
   const { authFetch } = useAuth();
-  const [pdfs, setPdfs]         = useState([]);
-  const [selected, setSelected] = useState(null);
-  const [leftOpen, setLeftOpen] = useState(true);
+  const [pdfs, setPdfs]           = useState([]);
+  const [selected, setSelected]   = useState(null);
+  const [leftOpen, setLeftOpen]   = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const [activeChunk, setActiveChunk] = useState(null);
 
@@ -726,10 +736,28 @@ export default function AdminPanel() {
 
   const handleSelect = (pdf) => { setSelected(pdf); setActiveChunk(null); };
 
-  const handleStatusChange = (filename, newStatus) => {
+  // ── FIX BUG STATUS ──────────────────────────────────────
+  // Dopo il caricamento aggiorna lo stato locale subito (UX reattiva)
+  // poi ricarica l'intera lista dal server così TUTTI i documenti
+  // mostrano lo status corretto senza dover ricaricare la pagina.
+  const handleStatusChange = useCallback(async (filename, newStatus) => {
+    // Aggiornamento locale immediato
     setPdfs(prev => prev.map(p => p.filename === filename ? { ...p, status: newStatus } : p));
     setSelected(prev => prev?.filename === filename ? { ...prev, status: newStatus } : prev);
-  };
+
+    // Ricarica dal server per sincronizzare tutti i documenti
+    try {
+      const res  = await authFetch("/api/v1/admin/pdfs");
+      const data = await res.json();
+      if (data.pdfs) {
+        setPdfs(data.pdfs);
+        const fresh = data.pdfs.find(p => p.filename === filename);
+        if (fresh) setSelected(fresh);
+      }
+    } catch (e) {
+      console.error("Refresh pdfs after status change error:", e);
+    }
+  }, [authFetch]);
 
   return (
     <div style={s.root}>
@@ -765,9 +793,18 @@ export default function AdminPanel() {
           </div>
         )}
         {rightOpen && (
-          <RightPanel pdf={selected} onStatusChange={handleStatusChange} onRefresh={fetchPdfs}
-            onChunkSelect={setActiveChunk} activeChunkId={activeChunk?.id}
-            onDeleted={(filename) => { setPdfs(prev => prev.filter(p => p.filename !== filename)); setSelected(null); setActiveChunk(null); }} />
+          <RightPanel
+            pdf={selected}
+            onStatusChange={handleStatusChange}
+            onRefresh={fetchPdfs}
+            onChunkSelect={setActiveChunk}
+            activeChunkId={activeChunk?.id}
+            onDeleted={(filename) => {
+              setPdfs(prev => prev.filter(p => p.filename !== filename));
+              setSelected(null);
+              setActiveChunk(null);
+            }}
+          />
         )}
       </div>
     </div>

@@ -1,39 +1,23 @@
 # app/services/auth_service.py
 """
-AuthService — OAuth2 + JWT + Refresh Token
-==========================================
+AuthService — OAuth2 + JWT + Refresh Token + RBAC
+==================================================
 
-ARCHITETTURA COMPLESSIVA:
-─────────────────────────────────────────────────────────────
-  Access Token  (JWT, stateless)
-    - Formato:  JWT firmato HS256
-    - Vita:     15 minuti
-    - Payload:  { sub: email, is_admin: bool, role: str, exp: ... }
-    - Storage:  memoria JavaScript (mai localStorage)
-    - Verifica: firma matematica, zero query al DB
-    - Scopo:    autorizzare ogni singola richiesta API
+PERMESSI:
+  La funzione resolve_permissions(utente_id, db) calcola
+  i permessi effettivi di un utente applicando:
+    1. Permessi ereditati dal ruolo
+    2. Override individuali (Utente_Permesso)
+  Il risultato è una lista di codici_permesso (solo quelli TRUE).
 
-  Refresh Token (stringa opaca, stateful)
-    - Formato:  32 byte casuali → hex string (64 caratteri)
-    - Vita:     30 giorni
-    - Storage:  httpOnly cookie (inaccessibile da JavaScript)
-    - DB:       salviamo SHA-256(token) — mai il token grezzo
-    - Scopo:    ottenere un nuovo access token quando scade
-    - Revoca:   UPDATE refresh_token SET revocato=TRUE
-                → logout reale immediato
-─────────────────────────────────────────────────────────────
+  I permessi vengono inseriti nel JWT al login/refresh.
+  Vita JWT = 15 minuti → i permessi scadono automaticamente.
+  Se vuoi effetto immediato: revoca il refresh token dell'utente.
 
-PERCHÉ httpOnly COOKIE per il refresh token:
-  Un attacco XSS può rubare qualsiasi variabile JavaScript.
-  Un cookie httpOnly non è accessibile da JS — il browser
-  lo gestisce in modo opaco e lo invia automaticamente.
-  Questo rompe la catena di attacco più comune contro i JWT.
-
-PERCHÉ SHA-256 e non bcrypt per il token hash:
-  bcrypt è lento per design (serve per le password).
-  Il refresh token è già casuale e lungo 32 byte —
-  non serve il costo computazionale di bcrypt.
-  SHA-256 è sufficiente e molto più veloce.
+DEPENDENCY require_permission("codice"):
+  Sostituisce require_admin() sugli endpoint.
+  Verifica che il permesso sia nel JWT dell'utente.
+  Se non presente → 403 Forbidden.
 """
 
 import os
@@ -41,13 +25,14 @@ import secrets
 import hashlib
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, List
 
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from app.db.session import get_db
 
@@ -63,37 +48,108 @@ ACCESS_TOKEN_MINUTES  = int(os.getenv("JWT_ACCESS_EXPIRE_MINUTES", "15"))
 REFRESH_TOKEN_DAYS    = int(os.getenv("JWT_REFRESH_EXPIRE_DAYS",   "30"))
 
 REFRESH_COOKIE_NAME   = "refresh_token"
-REFRESH_COOKIE_PATH   = "/api/v1/auth"   # cookie inviato SOLO su questi path
-                                          # non su /chat o /admin → meno superficie
+REFRESH_COOKIE_PATH   = "/api/v1/auth"
 
 _pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-# OAuth2PasswordBearer:
-#   - dice a FastAPI dove leggere il token (header Authorization: Bearer)
-#   - abilita il bottone Authorize nella Swagger UI /docs
-#   - NON fa verifiche — è solo un estrattore
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/token")
 
 
 # ─────────────────────────────────────────────
-# PASSWORD — bcrypt
+# PASSWORD
 # ─────────────────────────────────────────────
 
 def hash_password(plain: str) -> str:
-    """
-    Hash bcrypt della password.
-    bcrypt include salt automaticamente nell'hash risultante.
-    Output fisso: '$2b$12$...' (60 caratteri)
-    """
     return _pwd_context.hash(plain)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    """
-    Confronto in tempo costante per prevenire timing attacks.
-    passlib estrae il salt dall'hash e ricalcola internamente.
-    """
     return _pwd_context.verify(plain, hashed)
+
+
+# ─────────────────────────────────────────────
+# RISOLUZIONE PERMESSI
+# ─────────────────────────────────────────────
+
+def resolve_permissions(utente_id: int, db: Session) -> List[str]:
+    """
+    Calcola i permessi effettivi di un utente.
+
+    Logica (in ordine di priorità):
+      1. Override individuale (Utente_Permesso):
+         - concesso=TRUE  → permesso garantito
+         - concesso=FALSE → permesso negato anche se il ruolo ce l'ha
+      2. Permesso da ruolo (Ruolo_Permesso) → TRUE se presente
+      3. Default → FALSE (non incluso nella lista)
+
+    Ritorna una lista di codici_permesso (solo quelli effettivamente TRUE).
+    """
+    try:
+        rows = db.execute(text("""
+            WITH permessi_ruolo AS (
+                SELECT p.codice_permesso, TRUE AS concesso
+                FROM Utente_Ruolo ur
+                JOIN Ruolo_Permesso rp ON rp.ruolo_id   = ur.ruolo_id
+                JOIN Permesso       p  ON p.permesso_id = rp.permesso_id
+                WHERE ur.utente_id = :uid
+            ),
+            override AS (
+                SELECT p.codice_permesso, up.concesso
+                FROM Utente_Permesso up
+                JOIN Permesso p ON p.permesso_id = up.permesso_id
+                WHERE up.utente_id = :uid
+            ),
+            effettivi AS (
+                -- Override ha priorità assoluta
+                SELECT codice_permesso, concesso FROM override
+                UNION ALL
+                -- Ruolo solo se non c'è override
+                SELECT pr.codice_permesso, pr.concesso
+                FROM permessi_ruolo pr
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM override o
+                    WHERE o.codice_permesso = pr.codice_permesso
+                )
+            )
+            SELECT codice_permesso FROM effettivi WHERE concesso = TRUE
+        """), {"uid": utente_id}).fetchall()
+
+        return [r.codice_permesso for r in rows]
+
+    except Exception as e:
+        logger.error(f"resolve_permissions error (utente_id={utente_id}): {e}")
+        return []
+
+
+def user_has_permission(utente_id: int, codice: str, db: Session) -> bool:
+    """Controllo rapido per un singolo permesso (senza caricare tutti)."""
+    try:
+        row = db.execute(text("""
+            WITH override AS (
+                SELECT up.concesso
+                FROM Utente_Permesso up
+                JOIN Permesso p ON p.permesso_id = up.permesso_id
+                WHERE up.utente_id = :uid AND p.codice_permesso = :cod
+            ),
+            da_ruolo AS (
+                SELECT TRUE AS concesso
+                FROM Utente_Ruolo ur
+                JOIN Ruolo_Permesso rp ON rp.ruolo_id   = ur.ruolo_id
+                JOIN Permesso       p  ON p.permesso_id = rp.permesso_id
+                WHERE ur.utente_id = :uid AND p.codice_permesso = :cod
+                LIMIT 1
+            )
+            SELECT COALESCE(
+                (SELECT concesso FROM override LIMIT 1),
+                (SELECT concesso FROM da_ruolo LIMIT 1),
+                FALSE
+            ) AS risultato
+        """), {"uid": utente_id, "cod": codice}).fetchone()
+
+        return bool(row.risultato) if row else False
+
+    except Exception as e:
+        logger.error(f"user_has_permission error: {e}")
+        return False
 
 
 # ─────────────────────────────────────────────
@@ -102,20 +158,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(data: dict) -> str:
     """
-    Crea un JWT firmato HS256, vita 15 minuti.
-
-    Campi standard JWT (RFC 7519):
-      sub → Subject (email utente)
-      exp → Expiration time
-      iat → Issued At
-
-    Campi custom (leggibili dal frontend senza query):
-      is_admin → evita query DB per controllare il ruolo
-      role     → stringa ruolo per il frontend
-
-    IMPORTANTE: il JWT è Base64 — leggibile da chiunque.
-    Non inserire password, token o dati sensibili.
-    La firma garantisce integrità, non confidenzialità.
+    Crea JWT firmato HS256, vita 15 minuti.
+    Il campo 'permissions' trasporta la lista dei permessi effettivi.
     """
     now     = datetime.now(timezone.utc)
     payload = {
@@ -127,11 +171,6 @@ def create_access_token(data: dict) -> str:
 
 
 def decode_access_token(token: str) -> dict:
-    """
-    Decodifica e valida il JWT.
-    python-jose verifica automaticamente firma e scadenza.
-    Raises HTTPException 401 per qualsiasi anomalia.
-    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         if not payload.get("sub"):
@@ -147,25 +186,14 @@ def decode_access_token(token: str) -> dict:
 
 
 # ─────────────────────────────────────────────
-# REFRESH TOKEN — stringa opaca + DB
+# REFRESH TOKEN
 # ─────────────────────────────────────────────
 
 def generate_refresh_token() -> str:
-    """
-    32 byte casuali da os.urandom() → stringa hex 64 caratteri.
-    secrets.token_hex è crittograficamente sicuro per design.
-    """
     return secrets.token_hex(32)
 
 
 def hash_refresh_token(token: str) -> str:
-    """
-    SHA-256 del token grezzo → 64 caratteri hex.
-    Salviamo questo nel DB, mai il token originale.
-    Perché SHA-256 e non bcrypt: il token è già
-    32 byte random (entropia massima), bcrypt sarebbe
-    overhead inutile usato per password umane corte.
-    """
     return hashlib.sha256(token.encode()).hexdigest()
 
 
@@ -176,9 +204,7 @@ def save_refresh_token(
     ip_address: Optional[str] = None,
     user_agent: Optional[str] = None,
 ) -> None:
-    """Salva il refresh token (come hash) nel DB."""
     from app.models.rag_models import RefreshToken
-
     rt = RefreshToken(
         utente_id  = utente_id,
         token_hash = hash_refresh_token(token),
@@ -191,25 +217,12 @@ def save_refresh_token(
 
 
 def verify_refresh_token(db: Session, token: str):
-    """
-    Verifica che il token esista nel DB, non sia revocato
-    e non sia scaduto. Restituisce l'oggetto RefreshToken.
-
-    Raises HTTPException 401 se non valido.
-    """
     from app.models.rag_models import RefreshToken
-
     token_hash = hash_refresh_token(token)
-    rt = db.query(RefreshToken).filter_by(
-        token_hash = token_hash,
-        revocato   = False,
-    ).first()
+    rt = db.query(RefreshToken).filter_by(token_hash=token_hash, revocato=False).first()
 
     if not rt:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token non valido o revocato.",
-        )
+        raise HTTPException(status_code=401, detail="Refresh token non valido o revocato.")
 
     now = datetime.now(timezone.utc)
     exp = rt.scadenza
@@ -219,23 +232,16 @@ def verify_refresh_token(db: Session, token: str):
     if now > exp:
         rt.revocato = True
         db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Refresh token scaduto. Effettua nuovamente il login.",
-        )
+        raise HTTPException(status_code=401, detail="Refresh token scaduto. Effettua nuovamente il login.")
 
     return rt
 
 
 def revoke_refresh_token(db: Session, token: str) -> bool:
-    """Revoca un singolo token (logout da un device)."""
     from app.models.rag_models import RefreshToken
-
     rt = db.query(RefreshToken).filter_by(
-        token_hash = hash_refresh_token(token),
-        revocato   = False,
+        token_hash=hash_refresh_token(token), revocato=False
     ).first()
-
     if rt:
         rt.revocato = True
         db.commit()
@@ -244,15 +250,9 @@ def revoke_refresh_token(db: Session, token: str) -> bool:
 
 
 def revoke_all_refresh_tokens(db: Session, utente_id: int) -> int:
-    """
-    Revoca TUTTI i token di un utente.
-    Usato al cambio password o su sospetta compromissione.
-    """
     from app.models.rag_models import RefreshToken
-
     count = db.query(RefreshToken).filter_by(
-        utente_id = utente_id,
-        revocato  = False,
+        utente_id=utente_id, revocato=False
     ).update({"revocato": True})
     db.commit()
     return count
@@ -263,29 +263,6 @@ def revoke_all_refresh_tokens(db: Session, utente_id: int) -> int:
 # ─────────────────────────────────────────────
 
 def set_refresh_cookie(response, token: str) -> None:
-    """
-    Imposta il cookie httpOnly per il refresh token.
-
-    Attributi di sicurezza spiegati:
-      httponly=True     → JS non può leggere il cookie
-                          document.cookie non lo mostra
-                          blocca furto via XSS
-
-      secure=True       → inviato SOLO su HTTPS
-                          in produzione obbligatorio
-                          in sviluppo locale: False
-
-      samesite="strict" → inviato solo se la richiesta
-                          origina dallo stesso sito
-                          blocca attacchi CSRF
-
-      path=COOKIE_PATH  → inviato SOLO agli endpoint /auth
-                          non allegato a ogni chiamata API
-                          minimizza la superficie di attacco
-
-      max_age           → durata cookie nel browser
-                          = durata refresh token in secondi
-    """
     is_prod = os.getenv("ENVIRONMENT", "development") == "production"
     response.set_cookie(
         key      = REFRESH_COOKIE_NAME,
@@ -299,7 +276,6 @@ def set_refresh_cookie(response, token: str) -> None:
 
 
 def clear_refresh_cookie(response) -> None:
-    """Rimuove il cookie dal browser impostando max_age=0."""
     is_prod = os.getenv("ENVIRONMENT", "development") == "production"
     response.delete_cookie(
         key      = REFRESH_COOKIE_NAME,
@@ -311,51 +287,95 @@ def clear_refresh_cookie(response) -> None:
 
 
 def get_refresh_token_from_cookie(request: Request) -> Optional[str]:
-    """Legge il refresh token dal cookie della richiesta."""
     return request.cookies.get(REFRESH_COOKIE_NAME)
 
 
 # ─────────────────────────────────────────────
-# DEPENDENCIES FastAPI
+# DEPENDENCIES FASTAPI
 # ─────────────────────────────────────────────
 
 def get_current_user(
-    token: str = Depends(oauth2_scheme),
+    token: str       = Depends(oauth2_scheme),
+    db: Session      = Depends(get_db),
+):
+    """Verifica JWT e restituisce l'oggetto Utente."""
+    from app.models.rag_models import Utente
+    payload = decode_access_token(token)
+    email   = payload.get("sub")
+    user    = db.query(Utente).filter(Utente.email == email).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Utente non trovato.",
+                            headers={"WWW-Authenticate": "Bearer"})
+    return user
+
+
+def get_current_user_with_permissions(
+    token: str  = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
     """
-    Dependency iniettabile in ogni endpoint protetto.
-
-    Flusso per ogni richiesta:
-      1. FastAPI estrae Bearer token dall'header (oauth2_scheme)
-      2. decode_access_token: verifica firma JWT (no DB)
-      3. Una sola SELECT per email tramite indice
-      4. Restituisce oggetto Utente
-
-    Costo: ~1 query DB per richiesta. Leggero.
+    Come get_current_user ma restituisce anche i permessi dal JWT.
+    Usato quando serve accesso veloce ai permessi senza query DB.
     """
     from app.models.rag_models import Utente
-
     payload = decode_access_token(token)
     email   = payload.get("sub")
-
-    user = db.query(Utente).filter(Utente.email == email).first()
+    user    = db.query(Utente).filter(Utente.email == email).first()
     if not user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utente non trovato.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        raise HTTPException(status_code=401, detail="Utente non trovato.",
+                            headers={"WWW-Authenticate": "Bearer"})
+    # Permessi dal JWT (lista di codici)
+    user._permissions = payload.get("permissions", [])
     return user
+
+
+def require_permission(codice: str):
+    """
+    Dependency factory: verifica che l'utente abbia un permesso specifico.
+
+    Uso:
+        @router.get("/admin/something")
+        async def endpoint(_=Depends(require_permission("doc_upload"))):
+            ...
+
+    Legge i permessi dal JWT (nessuna query DB).
+    Se il permesso non è nel token → 403 Forbidden.
+    """
+    def _check(
+        token: str  = Depends(oauth2_scheme),
+        db: Session = Depends(get_db),
+    ):
+        from app.models.rag_models import Utente
+        payload = decode_access_token(token)
+
+        # Permessi dal JWT
+        permissions: list = payload.get("permissions", [])
+
+        if codice not in permissions:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permesso '{codice}' non disponibile.",
+            )
+
+        # Restituisce l'utente per endpoint che ne hanno bisogno
+        email = payload.get("sub")
+        user  = db.query(Utente).filter(Utente.email == email).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Utente non trovato.")
+        return user
+
+    return _check
 
 
 def require_admin(
     current_user = Depends(get_current_user),
     db: Session  = Depends(get_db),
 ):
-    """Richiede ruolo Admin o SuperAdmin."""
+    """
+    Retrocompatibilità: verifica ruolo Admin o SuperAdmin.
+    Per i nuovi endpoint usare require_permission() invece.
+    """
     from app.models.rag_models import Utente_Ruolo, Ruolo
-
     ruolo = (
         db.query(Ruolo.nome_ruolo)
         .join(Utente_Ruolo, Utente_Ruolo.ruolo_id == Ruolo.ruolo_id)
@@ -366,10 +386,7 @@ def require_admin(
         .first()
     )
     if not ruolo:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Accesso negato: richiesto ruolo Admin.",
-        )
+        raise HTTPException(status_code=403, detail="Accesso negato: richiesto ruolo Admin.")
     return current_user
 
 
@@ -377,12 +394,7 @@ def require_superadmin(
     current_user = Depends(get_current_user),
     db: Session  = Depends(get_db),
 ):
-    """
-    Richiede ruolo SuperAdmin.
-    Dashboard globale, log di tutti, gestione Admin.
-    """
     from app.models.rag_models import Utente_Ruolo, Ruolo
-
     is_super = (
         db.query(Utente_Ruolo)
         .join(Ruolo, Ruolo.ruolo_id == Utente_Ruolo.ruolo_id)
@@ -393,8 +405,5 @@ def require_superadmin(
         .first()
     )
     if not is_super:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Accesso negato: richiesto ruolo SuperAdmin.",
-        )
+        raise HTTPException(status_code=403, detail="Accesso negato: richiesto ruolo SuperAdmin.")
     return current_user

@@ -1,29 +1,9 @@
 // src/context/AuthContext.jsx
 //
-// ARCHITETTURA TOKEN NEL FRONTEND:
-//
-//   Access token  → stato React in memoria
-//                   mai localStorage (vulnerabile a XSS)
-//                   perso al refresh pagina → normale,
-//                   il refresh token nel cookie lo rinnova
-//
-//   Refresh token → cookie httpOnly gestito dal browser
-//                   JS non può leggerlo né modificarlo
-//                   inviato automaticamente su /api/v1/auth/*
-//
-// FLUSSO AL CARICAMENTO PAGINA:
-//   1. Access token = null (perso al refresh)
-//   2. AuthContext chiama /auth/refresh al mount
-//   3. Il browser invia il cookie httpOnly automaticamente
-//   4. Il backend risponde con nuovo access token
-//   5. L'utente è autenticato senza aver fatto login
-//
-// FLUSSO RICHIESTA CON TOKEN SCADUTO:
-//   1. authFetch riceve 401 da qualsiasi endpoint
-//   2. Chiama /auth/refresh automaticamente
-//   3. Ottiene nuovo access token
-//   4. Riprova la richiesta originale
-//   5. Tutto trasparente per l'utente
+// AGGIORNAMENTI RBAC:
+//   - permissions[] ora viene estratto dal JWT e dallo stato
+//   - hasPermission(codice) → bool, usato da componenti e route
+//   - il refresh token porta i permessi aggiornati nel nuovo JWT
 
 import {
   createContext, useContext, useState,
@@ -37,25 +17,25 @@ const AuthContext = createContext(null);
 export function AuthProvider({ children }) {
   const [token,        setToken]        = useState(null);
   const [user,         setUser]         = useState(null);
+  const [permissions,  setPermissions]  = useState([]);   // ← NUOVO
   const [initializing, setInitializing] = useState(true);
 
-  // Ref per evitare loop infiniti durante il refresh
   const isRefreshing   = useRef(false);
   const refreshPromise = useRef(null);
 
   const isAdmin      = user?.is_admin      ?? false;
   const isSuperAdmin = user?.is_superadmin ?? false;
 
-  // ── Refresh token → nuovo access token ──────────────────
-  // Chiamato:
-  //   1. Al mount (ripristino sessione dopo reload pagina)
-  //   2. Quando authFetch riceve 401 (token scaduto)
-  //
-  // Se ci sono più richieste simultanee che scadono insieme,
-  // isRefreshing garantisce che il refresh avvenga UNA SOLA VOLTA
-  // e tutte le richieste attendano lo stesso promise.
+  // ── Controllo permesso singolo ───────────────────────────
+  // Usato ovunque nel frontend:
+  //   const { hasPermission } = useAuth()
+  //   if (!hasPermission("tab_log")) return null
+  const hasPermission = useCallback((codice) => {
+    return permissions.includes(codice);
+  }, [permissions]);
+
+  // ── Refresh token ────────────────────────────────────────
   const attemptRefresh = useCallback(async () => {
-    // Se il refresh è già in corso, attendi lo stesso promise
     if (isRefreshing.current) return refreshPromise.current;
 
     isRefreshing.current = true;
@@ -63,22 +43,27 @@ export function AuthProvider({ children }) {
       try {
         const res = await fetch(`${API}/api/v1/auth/refresh`, {
           method:      "POST",
-          credentials: "include",  // invia il cookie httpOnly
+          credentials: "include",
         });
 
         if (!res.ok) {
-          // Refresh fallito → sessione scaduta, logout
           setToken(null);
           setUser(null);
+          setPermissions([]);
           return null;
         }
 
         const data = await res.json();
         setToken(data.access_token);
+        // ── Aggiorna permessi dal refresh ─────────────────
+        if (data.permissions) {
+          setPermissions(data.permissions);
+        }
         return data.access_token;
       } catch {
         setToken(null);
         setUser(null);
+        setPermissions([]);
         return null;
       } finally {
         isRefreshing.current  = false;
@@ -99,15 +84,10 @@ export function AuthProvider({ children }) {
         const data = await res.json();
         setUser(data);
       }
-    } catch {
-      // silenzioso — non critico
-    }
+    } catch {}
   }, []);
 
-  // ── Inizializzazione: prova a ripristinare la sessione ───
-  // Al mount, se c'è un refresh token valido nel cookie
-  // (il browser lo invia automaticamente), otteniamo un
-  // nuovo access token senza chiedere credenziali.
+  // ── Inizializzazione ─────────────────────────────────────
   useEffect(() => {
     const init = async () => {
       const newToken = await attemptRefresh();
@@ -117,21 +97,18 @@ export function AuthProvider({ children }) {
       setInitializing(false);
     };
     init();
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []); // eslint-disable-line
 
   // ── Login ────────────────────────────────────────────────
-  // OAuth2 standard: form-encoded, non JSON.
-  // Il campo si chiama "username" per standard OAuth2
-  // ma ci mettiamo l'email.
   const login = useCallback(async (email, password) => {
     const res = await fetch(`${API}/api/v1/auth/token`, {
       method:      "POST",
-      credentials: "include",   // riceve il cookie httpOnly
+      credentials: "include",
       headers:     { "Content-Type": "application/x-www-form-urlencoded" },
       body:        new URLSearchParams({
-        username:   email,       // standard OAuth2 = "username"
+        username:   email,
         password:   password,
-        grant_type: "password",  // standard OAuth2 obbligatorio
+        grant_type: "password",
       }),
     });
 
@@ -143,6 +120,8 @@ export function AuthProvider({ children }) {
     const data = await res.json();
     setToken(data.access_token);
     setUser(data.user);
+    // ── Salva permessi dalla risposta login ───────────────
+    setPermissions(data.permissions || []);
     return data.user;
   }, []);
 
@@ -151,19 +130,15 @@ export function AuthProvider({ children }) {
     try {
       await fetch(`${API}/api/v1/auth/logout`, {
         method:      "POST",
-        credentials: "include",  // invia cookie per la revoca
+        credentials: "include",
       });
-    } catch {
-      // anche se la chiamata fallisce, puliamo lo stato locale
-    }
+    } catch {}
     setToken(null);
     setUser(null);
+    setPermissions([]);
   }, []);
 
   // ── authFetch — wrapper con refresh automatico ───────────
-  // Ogni richiesta autenticata passa da qui.
-  // Se riceve 401, tenta il refresh una volta.
-  // Se il refresh fallisce, fa logout.
   const authFetch = useCallback(async (url, options = {}) => {
     const fullUrl = url.startsWith("http") ? url : `${API}${url}`;
 
@@ -177,27 +152,21 @@ export function AuthProvider({ children }) {
       },
     });
 
-    // Prima richiesta con il token attuale
     let res = await makeRequest(token);
 
-    // 401 → prova refresh una volta
     if (res.status === 401) {
       const newToken = await attemptRefresh();
       if (!newToken) {
-        // Refresh fallito → sessione scaduta
         throw new Error("Sessione scaduta. Effettua nuovamente il login.");
       }
       await fetchMe(newToken);
-      // Riprova con il nuovo token
       res = await makeRequest(newToken);
     }
 
     return res;
   }, [token, attemptRefresh, fetchMe]);
 
-  // ── Mostra loading durante l'inizializzazione ────────────
-  // Evita il flash "non autenticato" mentre /auth/refresh
-  // è ancora in corso al caricamento della pagina
+  // ── Loading ──────────────────────────────────────────────
   if (initializing) {
     return (
       <div style={{
@@ -214,6 +183,8 @@ export function AuthProvider({ children }) {
   return (
     <AuthContext.Provider value={{
       user, token, isAdmin, isSuperAdmin,
+      permissions,       // ← lista grezza
+      hasPermission,     // ← helper booleano
       login, logout, authFetch,
     }}>
       {children}

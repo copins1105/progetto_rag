@@ -6,15 +6,19 @@ import ChatPage    from "./pages/ChatPage";
 import AdminPage   from "./pages/AdminPage";
 import ProfilePage from "./pages/ProfilePage";
 
+// ─── Route protetta per autenticazione ──────────────────────
 function PrivateRoute({ children }) {
   const { token } = useAuth();
   return token ? children : <Navigate to="/login" replace />;
 }
 
-function AdminRoute({ children }) {
-  const { token, isAdmin } = useAuth();
-  if (!token)   return <Navigate to="/login" replace />;
-  if (!isAdmin) return <Navigate to="/"     replace />;
+// ─── Route protetta per permesso specifico ───────────────────
+// Usata per proteggere le pagine in base ai permessi RBAC.
+// Se l'utente non ha il permesso → redirect alla home (chat).
+function PermissionRoute({ codice, children }) {
+  const { token, hasPermission } = useAuth();
+  if (!token)               return <Navigate to="/login" replace />;
+  if (!hasPermission(codice)) return <Navigate to="/"    replace />;
   return children;
 }
 
@@ -29,15 +33,25 @@ export default function App() {
         element={token ? <Navigate to="/" replace /> : <Login />}
       />
 
-      {/* Route protette */}
+      {/* Chat — richiede page_chat */}
       <Route path="/" element={
-        <PrivateRoute><ChatPage /></PrivateRoute>
+        <PermissionRoute codice="page_chat">
+          <ChatPage />
+        </PermissionRoute>
       }/>
+
+      {/* Profilo — richiede page_profile */}
       <Route path="/profile" element={
-        <PrivateRoute><ProfilePage /></PrivateRoute>
+        <PermissionRoute codice="page_profile">
+          <ProfilePage />
+        </PermissionRoute>
       }/>
+
+      {/* Admin — richiede page_admin */}
       <Route path="/admin" element={
-        <AdminRoute><AdminPage /></AdminRoute>
+        <PermissionRoute codice="page_admin">
+          <AdminPage />
+        </PermissionRoute>
       }/>
 
       {/* Fallback */}
