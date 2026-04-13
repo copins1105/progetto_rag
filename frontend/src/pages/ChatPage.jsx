@@ -249,7 +249,7 @@ function DebugDrawer({ open, onClose, debugData }) {
 export default function ChatPage() {
   const navigate  = useNavigate()
   const { messages, sessionId, addMessage, resetChat } = useChat()
-  const { authFetch, user, logout, isAdmin } = useAuth()   // ← NUOVO
+  const { authFetch, user, logout, isAdmin , hasPermission} = useAuth()   // ← NUOVO
 
   const [input,          setInput]          = useState('')
   const [isTyping,       setIsTyping]       = useState(false)
@@ -357,7 +357,7 @@ export default function ChatPage() {
           </button>
 
           {/* Admin (solo se admin) */}
-          {isAdmin && (
+          {hasPermission('page_admin') && (
             <button className="admin-nav-btn" onClick={() => navigate('/admin')} style={{ marginBottom: 6 }}>
               <span>⚙</span> Pannello Admin
             </button>
