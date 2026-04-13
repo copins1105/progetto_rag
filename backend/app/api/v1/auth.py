@@ -40,17 +40,26 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 # HELPER: log attività
 # ─────────────────────────────────────────────
 
-def _log(db: Session, utente_id, azione: str, dettaglio: dict = None,
+def _log(db, utente_id, azione: str, dettaglio: dict = None,
          ip_address: str = None, esito: str = "ok"):
     try:
         db.execute(_text(
             "INSERT INTO Activity_Log (utente_id, azione, dettaglio, ip_address, esito) "
-            "VALUES (:uid, :azione, :det::jsonb, :ip, :esito)"
-        ), {"uid": utente_id, "azione": azione,
-            "det": _json.dumps(dettaglio or {}), "ip": ip_address, "esito": esito})
+            "VALUES (%(uid)s, %(azione)s, %(det)s::jsonb, %(ip)s, %(esito)s)"
+        ), {
+            "uid":    utente_id,
+            "azione": azione,
+            "det":    _json.dumps(dettaglio or {}),
+            "ip":     ip_address,
+            "esito":  esito,
+        })
         db.commit()
     except Exception as e:
         logger.warning(f"_log fallito ({azione}): {e}")
+        try:
+            db.rollback()   # ← CRITICO: senza questo la transazione rimane
+        except Exception:   #   in stato abortito e tutte le query successive
+            pass             #   falliscono con InFailedSqlTransaction
 
 
 # ─────────────────────────────────────────────

@@ -1,320 +1,78 @@
 // src/pages/AdminPanel.jsx
-// Fix: layout a piena altezza, scrollbar corrette, overflow gestito ovunque
+// Fix: rimossi tab Log/Utenti/Permessi dal pannello destro (RightPanel).
+// Quelli appartengono solo alla navbar superiore di AdminPage.
+// Il pannello destro è dedicato esclusivamente alle operazioni sui PDF.
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useIngestion } from "../context/IngestionContext";
 import { useAuth } from "../context/AuthContext";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
-import UserManagementPanel from "./UserManagementPanel";
-import ActivityLogPanel from "./ActivityLogPanel";
-import PermissionMatrixPanel from "./PermissionMatrixPanel";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
 const API = "http://127.0.0.1:8080";
 
 // ─────────────────────────────────────────────
-// STILI
+// STILI (identici all'originale)
 // ─────────────────────────────────────────────
 const s = {
-  // Root: occupa tutto lo spazio disponibile, NO overflow hidden al primo livello
-  root: {
-    display: "flex",
-    flexDirection: "column",
-    height: "100%",
-    width: "100%",
-    background: "var(--bg)",
-    color: "var(--text)",
-    fontFamily: "'DM Sans', sans-serif",
-    overflow: "hidden",
-  },
-  // Toolbar toggle pulsanti Lista/Dettagli
-  toolbar: {
-    display: "flex",
-    alignItems: "center",
-    gap: 8,
-    padding: "8px 16px",
-    background: "var(--surface)",
-    borderBottom: "1px solid var(--border)",
-    flexShrink: 0,
-  },
-  // Corpo principale: sidebar + viewer + right panel
-  body: {
-    display: "flex",
-    flex: 1,
-    overflow: "hidden",  // ← CRITICO: permette ai figli di scrollare
-    minHeight: 0,
-  },
-
-  // ── Sidebar sinistra ──
-  sidebar: {
-    width: "280px",
-    flexShrink: 0,
-    display: "flex",
-    flexDirection: "column",
-    background: "var(--surface)",
-    borderRight: "1px solid var(--border)",
-    overflow: "hidden",
-    height: "100%",
-  },
-  sidebarHeader: {
-    display: "flex",
-    alignItems: "center",
-    justifyContent: "space-between",
-    padding: "14px 16px 10px",
-    borderBottom: "1px solid var(--border)",
-    flexShrink: 0,
-  },
+  root: { display: "flex", flexDirection: "column", height: "100%", width: "100%", background: "var(--bg)", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", overflow: "hidden" },
+  toolbar: { display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", background: "var(--surface)", borderBottom: "1px solid var(--border)", flexShrink: 0 },
+  body: { display: "flex", flex: 1, overflow: "hidden", minHeight: 0 },
+  sidebar: { width: "280px", flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--surface)", borderRight: "1px solid var(--border)", overflow: "hidden", height: "100%" },
+  sidebarHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px 10px", borderBottom: "1px solid var(--border)", flexShrink: 0 },
   sidebarTitle: { fontSize: "0.88rem", fontWeight: 600, color: "var(--text)" },
   sidebarCount: { fontSize: "0.72rem", color: "var(--text-muted)", marginTop: 2 },
-  iconBtn: {
-    background: "none", border: "none", cursor: "pointer",
-    color: "var(--text-muted)", padding: "4px", borderRadius: "6px",
-    display: "flex", alignItems: "center", transition: "color 0.15s",
-  },
-  // Lista PDF — SCROLL verticale
-  pdfList: {
-    flex: 1,
-    overflowY: "auto",
-    overflowX: "hidden",
-    padding: "8px",
-    minHeight: 0,
-  },
-  pdfItem: (selected) => ({
-    width: "100%", textAlign: "left",
-    background: selected ? "rgba(79,142,247,0.1)" : "none",
-    border: selected ? "1px solid rgba(79,142,247,0.3)" : "1px solid transparent",
-    borderRadius: "8px", padding: "10px 12px", cursor: "pointer",
-    marginBottom: "2px", transition: "all 0.15s",
-  }),
-  pdfName: (selected) => ({
-    fontSize: "0.8rem", fontWeight: 500,
-    color: selected ? "var(--accent)" : "var(--text)",
-    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block",
-  }),
+  iconBtn: { background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px", borderRadius: "6px", display: "flex", alignItems: "center", transition: "color 0.15s" },
+  pdfList: { flex: 1, overflowY: "auto", overflowX: "hidden", padding: "8px", minHeight: 0 },
+  pdfItem: (selected) => ({ width: "100%", textAlign: "left", background: selected ? "rgba(79,142,247,0.1)" : "none", border: selected ? "1px solid rgba(79,142,247,0.3)" : "1px solid transparent", borderRadius: "8px", padding: "10px 12px", cursor: "pointer", marginBottom: "2px", transition: "all 0.15s" }),
+  pdfName: (selected) => ({ fontSize: "0.8rem", fontWeight: 500, color: selected ? "var(--accent)" : "var(--text)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block" }),
   pdfSize: { fontSize: "0.7rem", color: "var(--text-muted)", marginTop: 2 },
   pdfRow: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 },
-
-  uploadZone: (dragging) => ({
-    margin: "12px", padding: "14px", borderRadius: "10px",
-    border: `2px dashed ${dragging ? "var(--accent)" : "var(--border-strong)"}`,
-    background: dragging ? "var(--accent-dim)" : "var(--surface2)",
-    cursor: "pointer",
-    display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
-    transition: "all 0.2s", flexShrink: 0,
-  }),
+  uploadZone: (dragging) => ({ margin: "12px", padding: "14px", borderRadius: "10px", border: `2px dashed ${dragging ? "var(--accent)" : "var(--border-strong)"}`, background: dragging ? "var(--accent-dim)" : "var(--surface2)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 6, transition: "all 0.2s", flexShrink: 0 }),
   uploadText: { fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", lineHeight: 1.5 },
-
-  // ── PDF Viewer (centro) ──
-  viewer: {
-    flex: 1,
-    display: "flex",
-    flexDirection: "column",
-    background: "var(--bg)",
-    borderRight: "1px solid var(--border)",
-    overflow: "hidden",
-    minWidth: 0,
-  },
-  viewerToolbar: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "8px 16px",
-    background: "var(--surface)", borderBottom: "1px solid var(--border)",
-    flexShrink: 0,
-  },
-  viewerFilename: {
-    fontSize: "0.75rem", color: "var(--text-muted)", fontFamily: "'DM Mono', monospace",
-    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260,
-  },
+  viewer: { flex: 1, display: "flex", flexDirection: "column", background: "var(--bg)", borderRight: "1px solid var(--border)", overflow: "hidden", minWidth: 0 },
+  viewerToolbar: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 16px", background: "var(--surface)", borderBottom: "1px solid var(--border)", flexShrink: 0 },
+  viewerFilename: { fontSize: "0.75rem", color: "var(--text-muted)", fontFamily: "'DM Mono', monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 260 },
   viewerControls: { display: "flex", alignItems: "center", gap: 16 },
-  viewerBtn: {
-    background: "none", border: "none", cursor: "pointer",
-    color: "var(--text-muted)", padding: "4px 6px", borderRadius: "4px",
-    fontSize: "0.9rem", transition: "color 0.15s",
-  },
+  viewerBtn: { background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", padding: "4px 6px", borderRadius: "4px", fontSize: "0.9rem", transition: "color 0.15s" },
   viewerPageNum: { fontSize: "0.72rem", color: "var(--text-muted)", fontFamily: "'DM Mono', monospace" },
-  viewerZoom: {
-    fontSize: "0.72rem", color: "var(--text-muted)", fontFamily: "'DM Mono', monospace",
-    minWidth: 36, textAlign: "center",
-  },
-  // Contenuto viewer — SCROLL verticale
-  viewerContent: {
-    flex: 1,
-    overflowY: "auto",
-    overflowX: "auto",
-    display: "flex",
-    justifyContent: "center",
-    padding: "24px 16px",
-    minHeight: 0,
-  },
-  viewerEmpty: {
-    display: "flex", flexDirection: "column", alignItems: "center",
-    justifyContent: "center", height: "100%", color: "var(--text-muted)", gap: 12,
-  },
-  chunkBanner: {
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "6px 16px",
-    background: "rgba(79,142,247,0.1)", borderBottom: "1px solid rgba(79,142,247,0.25)",
-    flexShrink: 0, gap: 10,
-  },
-  chunkBannerText: {
-    fontSize: "0.72rem", color: "var(--accent)", fontFamily: "'DM Mono', monospace",
-    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1,
-  },
-  chunkBannerClear: {
-    background: "none", border: "none", cursor: "pointer",
-    color: "var(--text-muted)", fontSize: "0.75rem", padding: "2px 6px",
-    borderRadius: 4, flexShrink: 0, transition: "color 0.15s",
-  },
-
-  // ── Right panel ──
-  right: {
-    width: "400px",
-    flexShrink: 0,
-    display: "flex",
-    flexDirection: "column",
-    background: "var(--surface)",
-    overflow: "hidden",
-    height: "100%",
-  },
+  viewerZoom: { fontSize: "0.72rem", color: "var(--text-muted)", fontFamily: "'DM Mono', monospace", minWidth: 36, textAlign: "center" },
+  viewerContent: { flex: 1, overflowY: "auto", overflowX: "auto", display: "flex", justifyContent: "center", padding: "24px 16px", minHeight: 0 },
+  viewerEmpty: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-muted)", gap: 12 },
+  chunkBanner: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 16px", background: "rgba(79,142,247,0.1)", borderBottom: "1px solid rgba(79,142,247,0.25)", flexShrink: 0, gap: 10 },
+  chunkBannerText: { fontSize: "0.72rem", color: "var(--accent)", fontFamily: "'DM Mono', monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
+  chunkBannerClear: { background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "0.75rem", padding: "2px 6px", borderRadius: 4, flexShrink: 0, transition: "color 0.15s" },
+  right: { width: "400px", flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--surface)", overflow: "hidden", height: "100%" },
   rightHeader: { padding: "14px 16px", borderBottom: "1px solid var(--border)", flexShrink: 0 },
-  rightFilename: {
-    fontSize: "0.82rem", fontWeight: 600, color: "var(--text)",
-    wordBreak: "break-all", lineHeight: 1.4, marginBottom: 4,
-  },
+  rightFilename: { fontSize: "0.82rem", fontWeight: 600, color: "var(--text)", wordBreak: "break-all", lineHeight: 1.4, marginBottom: 4 },
   rightSize: { fontSize: "0.7rem", color: "var(--text-muted)" },
-  // Body del right panel — SCROLL verticale
-  rightBody: {
-    flex: 1,
-    overflowY: "auto",
-    overflowX: "hidden",
-    padding: "16px",
-    minHeight: 0,
-  },
-  rightEmpty: {
-    display: "flex", flexDirection: "column", alignItems: "center",
-    justifyContent: "center", height: "100%",
-    color: "var(--text-muted)", gap: 8, padding: 24,
-  },
-  tabs: {
-    display: "flex",
-    borderBottom: "1px solid var(--border)",
-    padding: "0 12px",
-    flexShrink: 0,
-    overflowX: "auto",
-    overflowY: "hidden",
-  },
-  tab: (active) => ({
-    fontSize: "0.75rem", fontWeight: 500,
-    padding: "10px 0", marginRight: 14,
-    background: "none", border: "none", cursor: "pointer",
-    color: active ? "var(--accent)" : "var(--text-muted)",
-    borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent",
-    transition: "all 0.15s", whiteSpace: "nowrap", flexShrink: 0,
-  }),
-
-  // ── Form elements ──
+  rightBody: { flex: 1, overflowY: "auto", overflowX: "hidden", padding: "16px", minHeight: 0 },
+  rightEmpty: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", color: "var(--text-muted)", gap: 8, padding: 24 },
+  tabs: { display: "flex", borderBottom: "1px solid var(--border)", padding: "0 12px", flexShrink: 0, overflowX: "auto", overflowY: "hidden" },
+  tab: (active) => ({ fontSize: "0.75rem", fontWeight: 500, padding: "10px 0", marginRight: 14, background: "none", border: "none", cursor: "pointer", color: active ? "var(--accent)" : "var(--text-muted)", borderBottom: active ? "2px solid var(--accent)" : "2px solid transparent", transition: "all 0.15s", whiteSpace: "nowrap", flexShrink: 0 }),
   formGroup: { marginBottom: 12 },
-  formLabel: {
-    fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 600,
-    display: "block", marginBottom: 4,
-    textTransform: "uppercase", letterSpacing: "0.06em",
-  },
-  formSelect: {
-    width: "100%", padding: "8px 10px",
-    background: "var(--surface2)", border: "1px solid var(--border-strong)",
-    borderRadius: "6px", color: "var(--text)",
-    fontFamily: "inherit", fontSize: "0.82rem", outline: "none",
-  },
-  formInput: {
-    width: "100%", padding: "8px 10px",
-    background: "var(--surface2)", border: "1px solid var(--border-strong)",
-    borderRadius: "6px", color: "var(--text)",
-    fontFamily: "inherit", fontSize: "0.82rem", outline: "none",
-  },
-
-  // ── Banners ──
-  successBanner: {
-    background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)",
-    borderRadius: "8px", padding: "10px 14px",
-    fontSize: "0.82rem", color: "#34d399",
-    display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
-  },
-  errorBanner: {
-    background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)",
-    borderRadius: "8px", padding: "10px 14px",
-    fontSize: "0.82rem", color: "#f87171",
-    display: "flex", alignItems: "center", gap: 8, marginBottom: 12,
-  },
-  warnBanner: {
-    background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)",
-    borderRadius: "8px", padding: "10px 14px",
-    fontSize: "0.78rem", color: "#fbbf24", marginBottom: 12,
-  },
-
-  // ── Log box ──
+  formLabel: { fontSize: "0.72rem", color: "var(--text-muted)", fontWeight: 600, display: "block", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" },
+  formSelect: { width: "100%", padding: "8px 10px", background: "var(--surface2)", border: "1px solid var(--border-strong)", borderRadius: "6px", color: "var(--text)", fontFamily: "inherit", fontSize: "0.82rem", outline: "none" },
+  formInput: { width: "100%", padding: "8px 10px", background: "var(--surface2)", border: "1px solid var(--border-strong)", borderRadius: "6px", color: "var(--text)", fontFamily: "inherit", fontSize: "0.82rem", outline: "none" },
+  successBanner: { background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: "8px", padding: "10px 14px", fontSize: "0.82rem", color: "#34d399", display: "flex", alignItems: "center", gap: 8, marginBottom: 12 },
+  errorBanner: { background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: "8px", padding: "10px 14px", fontSize: "0.82rem", color: "#f87171", display: "flex", alignItems: "center", gap: 8, marginBottom: 12 },
+  warnBanner: { background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: "8px", padding: "10px 14px", fontSize: "0.78rem", color: "#fbbf24", marginBottom: 12 },
   logBox: { background: "var(--bg)", border: "1px solid var(--border)", borderRadius: "8px", overflow: "hidden" },
-  logHeader: {
-    display: "flex", alignItems: "center", gap: 8, padding: "6px 12px",
-    background: "var(--surface2)", borderBottom: "1px solid var(--border)",
-    fontSize: "0.7rem", fontFamily: "'DM Mono', monospace", color: "var(--text-muted)",
-  },
-  logDot: (active) => ({
-    width: 7, height: 7, borderRadius: "50%",
-    background: active ? "#f59e0b" : "var(--text-muted)",
-    animation: active ? "pulse-dot 2s infinite" : "none",
-  }),
+  logHeader: { display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", background: "var(--surface2)", borderBottom: "1px solid var(--border)", fontSize: "0.7rem", fontFamily: "'DM Mono', monospace", color: "var(--text-muted)" },
+  logDot: (active) => ({ width: 7, height: 7, borderRadius: "50%", background: active ? "#f59e0b" : "var(--text-muted)", animation: active ? "pulse-dot 2s infinite" : "none" }),
   logContent: { height: 200, overflowY: "auto", padding: "10px 12px" },
   logLine: { fontSize: "0.7rem", fontFamily: "'DM Mono', monospace", color: "var(--text-dim)", lineHeight: 1.8 },
-
-  // ── Chunk explorer ──
   chunkStats: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, fontSize: "0.75rem", color: "var(--text-muted)" },
-  chunkItem: (isActive) => ({
-    background: isActive ? "rgba(79,142,247,0.08)" : "var(--surface2)",
-    border: isActive ? "1px solid rgba(79,142,247,0.35)" : "1px solid var(--border)",
-    borderRadius: "8px", overflow: "hidden", marginBottom: 6,
-    transition: "border-color 0.15s, background 0.15s",
-  }),
-  chunkHeader: () => ({
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    padding: "8px 12px", cursor: "pointer",
-    background: "none", border: "none", width: "100%", textAlign: "left", gap: 8,
-  }),
-  chunkBody: {
-    padding: "10px 12px", borderTop: "1px solid var(--border)",
-    fontSize: "0.72rem", fontFamily: "'DM Mono', monospace",
-    color: "var(--text-dim)", whiteSpace: "pre-wrap", lineHeight: 1.7,
-  },
-  chunkPagePill: {
-    display: "inline-flex", alignItems: "center", gap: 5,
-    background: "rgba(79,142,247,0.12)", border: "1px solid rgba(79,142,247,0.3)",
-    borderRadius: 20, padding: "3px 10px",
-    fontSize: "0.68rem", color: "var(--accent)", cursor: "pointer",
-    marginBottom: 8, transition: "background 0.15s", fontFamily: "'DM Mono', monospace",
-  },
+  chunkItem: (isActive) => ({ background: isActive ? "rgba(79,142,247,0.08)" : "var(--surface2)", border: isActive ? "1px solid rgba(79,142,247,0.35)" : "1px solid var(--border)", borderRadius: "8px", overflow: "hidden", marginBottom: 6, transition: "border-color 0.15s, background 0.15s" }),
+  chunkHeader: () => ({ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", cursor: "pointer", background: "none", border: "none", width: "100%", textAlign: "left", gap: 8 }),
+  chunkBody: { padding: "10px 12px", borderTop: "1px solid var(--border)", fontSize: "0.72rem", fontFamily: "'DM Mono', monospace", color: "var(--text-dim)", whiteSpace: "pre-wrap", lineHeight: 1.7 },
+  chunkPagePill: { display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(79,142,247,0.12)", border: "1px solid rgba(79,142,247,0.3)", borderRadius: 20, padding: "3px 10px", fontSize: "0.68rem", color: "var(--accent)", cursor: "pointer", marginBottom: 8, transition: "background 0.15s", fontFamily: "'DM Mono', monospace" },
   pagination: { display: "flex", justifyContent: "space-between", marginTop: 8, paddingTop: 8, borderTop: "1px solid var(--border)" },
   pageBtn: { background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", color: "var(--text-muted)", transition: "color 0.15s" },
-
-  // ── Sync ──
-  syncItem: (stato) => {
-    const colors = {
-      synced:       { bg: "rgba(52,211,153,0.08)",  border: "rgba(52,211,153,0.2)" },
-      solo_postgres:{ bg: "rgba(251,191,36,0.08)",  border: "rgba(251,191,36,0.2)" },
-      solo_chroma:  { bg: "rgba(251,191,36,0.08)",  border: "rgba(251,191,36,0.2)" },
-      mismatch:     { bg: "rgba(239,68,68,0.08)",   border: "rgba(239,68,68,0.2)"  },
-      error:        { bg: "rgba(239,68,68,0.08)",   border: "rgba(239,68,68,0.2)"  },
-      pending:      { bg: "rgba(251,191,36,0.08)",  border: "rgba(251,191,36,0.2)" },
-      not_found:    { bg: "var(--surface2)",         border: "var(--border)"        },
-    }
-    const c = colors[stato] || colors.not_found
-    return { background: c.bg, border: `1px solid ${c.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 6 }
-  },
-  syncDot: (stato) => {
-    const dots = { synced: "#34d399", solo_postgres: "#fbbf24", solo_chroma: "#fbbf24", mismatch: "#f87171", error: "#f87171", pending: "#fbbf24" }
-    return { width: 7, height: 7, borderRadius: "50%", background: dots[stato] || "var(--text-muted)", flexShrink: 0, marginTop: 3 }
-  },
-
-  // ── Dialog ──
+  syncItem: (stato) => { const colors = { synced: { bg: "rgba(52,211,153,0.08)", border: "rgba(52,211,153,0.2)" }, solo_postgres: { bg: "rgba(251,191,36,0.08)", border: "rgba(251,191,36,0.2)" }, solo_chroma: { bg: "rgba(251,191,36,0.08)", border: "rgba(251,191,36,0.2)" }, mismatch: { bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.2)" }, error: { bg: "rgba(239,68,68,0.08)", border: "rgba(239,68,68,0.2)" }, pending: { bg: "rgba(251,191,36,0.08)", border: "rgba(251,191,36,0.2)" }, not_found: { bg: "var(--surface2)", border: "var(--border)" } }; const c = colors[stato] || colors.not_found; return { background: c.bg, border: `1px solid ${c.border}`, borderRadius: 8, padding: "10px 12px", marginBottom: 6 } },
+  syncDot: (stato) => { const dots = { synced: "#34d399", solo_postgres: "#fbbf24", solo_chroma: "#fbbf24", mismatch: "#f87171", error: "#f87171", pending: "#fbbf24" }; return { width: 7, height: 7, borderRadius: "50%", background: dots[stato] || "var(--text-muted)", flexShrink: 0, marginTop: 3 } },
   overlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 },
   dialog: { background: "var(--surface)", border: "1px solid var(--border-strong)", borderRadius: 14, padding: "28px 28px 24px", width: 360, boxShadow: "0 24px 48px rgba(0,0,0,0.5)" },
   dialogTitle: { fontSize: "0.95rem", fontWeight: 600, color: "var(--text)", marginBottom: 8 },
@@ -322,22 +80,8 @@ const s = {
   dialogBtns: { display: "flex", gap: 8, justifyContent: "flex-end" },
   dialogCancel: { padding: "8px 16px", background: "none", border: "1px solid var(--border-strong)", borderRadius: 8, color: "var(--text-muted)", cursor: "pointer", fontFamily: "inherit", fontSize: "0.82rem" },
   dialogConfirm: { padding: "8px 16px", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8, color: "#f87171", cursor: "pointer", fontFamily: "inherit", fontSize: "0.82rem", fontWeight: 600 },
-
-  // ── Buttons ──
-  ingestBtn: {
-    width: "100%", padding: "10px",
-    background: "var(--accent)", color: "white", border: "none",
-    borderRadius: "8px", cursor: "pointer", fontSize: "0.85rem", fontWeight: 600,
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-    transition: "opacity 0.2s", marginBottom: 12,
-  },
-  loaderBtn: {
-    width: "100%", padding: "10px",
-    background: "#10b981", color: "white", border: "none",
-    borderRadius: "8px", cursor: "pointer", fontSize: "0.85rem", fontWeight: 600,
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-    transition: "opacity 0.2s", marginTop: 4,
-  },
+  ingestBtn: { width: "100%", padding: "10px", background: "var(--accent)", color: "white", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.85rem", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "opacity 0.2s", marginBottom: 12 },
+  loaderBtn: { width: "100%", padding: "10px", background: "#10b981", color: "white", border: "none", borderRadius: "8px", cursor: "pointer", fontSize: "0.85rem", fontWeight: 600, display: "flex", alignItems: "center", justifyContent: "center", gap: 8, transition: "opacity 0.2s", marginTop: 4 },
 }
 
 const BADGE_STYLE = {
@@ -356,12 +100,7 @@ const SYNC_LABEL = {
 function Badge({ status }) {
   const b = BADGE_STYLE[status] || BADGE_STYLE.not_ingested
   return (
-    <span style={{
-      fontSize: "0.65rem", fontWeight: 600, fontFamily: "'DM Mono', monospace",
-      padding: "2px 7px", borderRadius: 20,
-      background: b.bg, color: b.color, border: `1px solid ${b.border}`,
-      whiteSpace: "nowrap", flexShrink: 0,
-    }}>
+    <span style={{ fontSize: "0.65rem", fontWeight: 600, fontFamily: "'DM Mono', monospace", padding: "2px 7px", borderRadius: 20, background: b.bg, color: b.color, border: `1px solid ${b.border}`, whiteSpace: "nowrap", flexShrink: 0 }}>
       {b.label}
     </span>
   )
@@ -390,18 +129,12 @@ function UploadZone({ onUploaded }) {
   }
 
   return (
-    <div
-      style={s.uploadZone(dragging)}
-      onClick={() => inputRef.current?.click()}
+    <div style={s.uploadZone(dragging)} onClick={() => inputRef.current?.click()}
       onDragOver={(e) => { e.preventDefault(); setDragging(true) }}
       onDragLeave={() => setDragging(false)}
-      onDrop={(e) => { e.preventDefault(); setDragging(false); upload(e.dataTransfer.files[0]) }}
-    >
-      <input ref={inputRef} type="file" accept=".pdf" style={{ display: "none" }}
-        onChange={(e) => upload(e.target.files[0])} />
-      {uploading ? (
-        <span style={s.uploadText}>Caricamento…</span>
-      ) : (
+      onDrop={(e) => { e.preventDefault(); setDragging(false); upload(e.dataTransfer.files[0]) }}>
+      <input ref={inputRef} type="file" accept=".pdf" style={{ display: "none" }} onChange={(e) => upload(e.target.files[0])} />
+      {uploading ? <span style={s.uploadText}>Caricamento…</span> : (
         <>
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
@@ -918,7 +651,8 @@ function EditPanel({ pdf, onUpdated }) {
 }
 
 // ─────────────────────────────────────────────
-// RIGHT PANEL
+// RIGHT PANEL — solo tab relativi ai PDF
+// FIX: rimossi tab Log, Utenti, Permessi che non appartengono qui
 // ─────────────────────────────────────────────
 function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, activeChunkId }) {
   const { authFetch, hasPermission } = useAuth()
@@ -954,31 +688,23 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
     )
   }
 
-  // Tab filtrati per permessi
+  // ── Tab solo per operazioni PDF ──────────────────────────────
+  // Log, Utenti e Permessi sono nella navbar superiore di AdminPage
   const allTabs = [
-    { id: "ingest",      label: "Ingestion", disabled: false,                                                        perm: "tab_ingestion" },
-    { id: "loader",      label: "Loader",    disabled: pdf.status === "not_ingested" || pdf.status === "processing", perm: "tab_loader" },
-    { id: "chunks",      label: "Chunks",    disabled: pdf.status !== "completed",                                   perm: "tab_chunks" },
-    { id: "modifica",    label: "Modifica",  disabled: pdf.status !== "completed",                                   perm: "tab_modifica" },
-    { id: "sync",        label: "Sync",      disabled: false,                                                        perm: "tab_sync" },
-    { id: "log",         label: "Log",       disabled: false,                                                        perm: "tab_log" },
-    { id: "users",       label: "Utenti",    disabled: false,                                                        perm: "tab_users" },
-    { id: "permissions", label: "Permessi",  disabled: false,                                                        perm: "tab_permissions" },
+    { id: "ingest",   label: "Ingestion", disabled: false,                                                        perm: "tab_ingestion" },
+    { id: "loader",   label: "Loader",    disabled: pdf.status === "not_ingested" || pdf.status === "processing", perm: "tab_loader"    },
+    { id: "chunks",   label: "Chunks",    disabled: pdf.status !== "completed",                                   perm: "tab_chunks"    },
+    { id: "modifica", label: "Modifica",  disabled: pdf.status !== "completed",                                   perm: "tab_modifica"  },
+    { id: "sync",     label: "Sync",      disabled: false,                                                        perm: "tab_sync"      },
   ].filter(t => hasPermission(t.perm))
 
-  // Se l'activeTab non è più visibile, reset al primo disponibile
-  const tabIds = allTabs.map(t => t.id)
+  const tabIds     = allTabs.map(t => t.id)
   const currentTab = tabIds.includes(activeTab) ? activeTab : (tabIds[0] || "ingest")
-
-  // Tab che hanno bisogno di layout flex colonna (senza padding per gestire scroll interno)
-  const flexBodyTabs = ["log", "permissions"]
-  const isFlexBody = flexBodyTabs.includes(currentTab)
 
   return (
     <div style={s.right}>
       {showDelete && <DeleteDialog filename={pdf.filename} onConfirm={handleDelete} onCancel={() => setShowDelete(false)} />}
 
-      {/* Header */}
       <div style={s.rightHeader}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
           <div style={s.rightFilename}>{pdf.filename}</div>
@@ -992,33 +718,20 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
         </div>
       </div>
 
-      {/* Tabs */}
       <div style={s.tabs}>
         {allTabs.map(t => (
-          <button
-            key={t.id}
-            style={{ ...s.tab(currentTab === t.id), opacity: t.disabled ? 0.35 : 1 }}
-            disabled={t.disabled}
-            onClick={() => !t.disabled && setActiveTab(t.id)}
-          >
+          <button key={t.id} style={{ ...s.tab(currentTab === t.id), opacity: t.disabled ? 0.35 : 1 }} disabled={t.disabled} onClick={() => !t.disabled && setActiveTab(t.id)}>
             {t.label}
           </button>
         ))}
       </div>
 
-      {/* Body */}
-      <div style={isFlexBody
-        ? { flex: 1, overflow: "hidden", display: "flex", flexDirection: "column", minHeight: 0 }
-        : s.rightBody
-      }>
-        {currentTab === "ingest"      && <IngestionPanel pdf={pdf} onIngested={() => onStatusChange(pdf.filename, "ready")} />}
-        {currentTab === "loader"      && <LoaderPanel pdf={pdf} onLoaded={() => { onStatusChange(pdf.filename, "completed"); onRefresh() }} />}
-        {currentTab === "chunks"      && pdf.status === "completed" && <ChunkExplorer filename={pdf.filename} onChunkSelect={onChunkSelect} activeChunkId={activeChunkId} />}
-        {currentTab === "modifica"    && pdf.status === "completed" && <EditPanel pdf={pdf} onUpdated={() => {}} />}
-        {currentTab === "sync"        && <SyncPanel />}
-        {currentTab === "log"         && <ActivityLogPanel />}
-        {currentTab === "users"       && <UserManagementPanel />}
-        {currentTab === "permissions" && <PermissionMatrixPanel />}
+      <div style={s.rightBody}>
+        {currentTab === "ingest"   && <IngestionPanel pdf={pdf} onIngested={() => onStatusChange(pdf.filename, "ready")} />}
+        {currentTab === "loader"   && <LoaderPanel pdf={pdf} onLoaded={() => { onStatusChange(pdf.filename, "completed"); onRefresh() }} />}
+        {currentTab === "chunks"   && pdf.status === "completed" && <ChunkExplorer filename={pdf.filename} onChunkSelect={onChunkSelect} activeChunkId={activeChunkId} />}
+        {currentTab === "modifica" && pdf.status === "completed" && <EditPanel pdf={pdf} onUpdated={() => {}} />}
+        {currentTab === "sync"     && <SyncPanel />}
       </div>
     </div>
   )
@@ -1063,10 +776,9 @@ export default function AdminPanel() {
 
   return (
     <div style={s.root}>
-      {/* Toolbar toggle */}
       <div style={s.toolbar}>
-        <ToggleBtn active={leftOpen} onClick={() => setLeftOpen(o => !o)} icon="sidebar-left" label="Lista documenti" />
-        <ToggleBtn active={rightOpen} onClick={() => setRightOpen(o => !o)} icon="sidebar-right" label="Dettagli" />
+        <ToggleBtn active={leftOpen} onClick={() => setLeftOpen(o => !o)} label="Lista documenti" />
+        <ToggleBtn active={rightOpen} onClick={() => setRightOpen(o => !o)} label="Dettagli" />
         {activeChunk && (
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginLeft: "auto", padding: "4px 12px", borderRadius: 6, background: "rgba(79,142,247,0.08)", border: "1px solid rgba(79,142,247,0.2)" }}>
             <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", boxShadow: "0 0 6px var(--accent)", flexShrink: 0 }} />
@@ -1078,7 +790,6 @@ export default function AdminPanel() {
         )}
       </div>
 
-      {/* Body: sidebar + viewer + right */}
       <div style={s.body}>
         {leftOpen && (
           <Sidebar
@@ -1090,7 +801,6 @@ export default function AdminPanel() {
           />
         )}
 
-        {/* Center: PDF viewer o empty state */}
         {selected ? (
           <PdfViewer filename={selected.filename} activeChunk={activeChunk} onClearChunk={() => setActiveChunk(null)} />
         ) : (
@@ -1123,25 +833,11 @@ export default function AdminPanel() {
   )
 }
 
-// Helper bottone toggle
 function ToggleBtn({ active, onClick, label }) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        padding: "5px 12px", borderRadius: 6,
-        border: "1px solid var(--border-strong)",
-        background: active ? "var(--accent-dim)" : "none",
-        color: active ? "var(--accent)" : "var(--text-muted)",
-        cursor: "pointer", fontFamily: "inherit",
-        fontSize: "0.75rem", fontWeight: 600,
-        display: "flex", alignItems: "center", gap: 6,
-        transition: "all 0.15s",
-      }}
-    >
+    <button onClick={onClick} style={{ padding: "5px 12px", borderRadius: 6, border: "1px solid var(--border-strong)", background: active ? "var(--accent-dim)" : "none", color: active ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", fontFamily: "inherit", fontSize: "0.75rem", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, transition: "all 0.15s" }}>
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="18" height="18" rx="2"/>
-        <line x1="9" y1="3" x2="9" y2="21"/>
+        <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/>
       </svg>
       {label}
     </button>

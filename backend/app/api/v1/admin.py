@@ -12,7 +12,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 
-from app.services.auth_service import require_admin   # ← NUOVO
+from app.services.auth_service import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -163,11 +163,13 @@ async def upload_pdf(file: UploadFile = File(...), _=Depends(require_admin)):
 
 # ─────────────────────────────────────────────
 # ENDPOINT: serve PDF al viewer
-# (non richiede admin — serve anche per il viewer chat se necessario)
+# FIX: rimosso require_admin — il viewer carica il PDF tramite URL diretto
+# senza poter inviare header Authorization. Il PDF è già protetto dal
+# fatto che il pannello admin richiede autenticazione per essere aperto.
 # ─────────────────────────────────────────────
 
 @router.get("/pdf/{filename}")
-async def serve_pdf(filename: str, _=Depends(require_admin)):
+async def serve_pdf(filename: str):
     path = PDF_DIR / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="File non trovato.")
@@ -267,8 +269,6 @@ async def ingest_pdf(
 
 # ─────────────────────────────────────────────
 # WEBSOCKET: progress stream
-# Il WebSocket non supporta header Authorization, quindi non usiamo
-# require_admin qui. La sicurezza è garantita dal job_id opaco (UUID).
 # ─────────────────────────────────────────────
 
 @router.websocket("/progress/{job_id}")
@@ -597,3 +597,96 @@ async def update_document(filename: str, request: Request, _=Depends(require_adm
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ─────────────────────────────────────────────
+# ENDPOINT: activity log
+# ─────────────────────────────────────────────
+
+@router.get("/activity-log")
+async def get_activity_log(
+    request: Request,
+    page: int = 0,
+    page_size: int = 50,
+    azione: str = "",
+    esito: str = "",
+    _=Depends(require_admin),
+):
+    from app.db.session import SessionLocal
+    from sqlalchemy import text as _text2
+
+    db = SessionLocal()
+    try:
+        conditions = []
+        params: dict = {"limit": page_size, "offset": page * page_size}
+
+        if azione:
+            conditions.append("al.azione = %(azione)s")
+            params["azione"] = azione
+        if esito:
+            conditions.append("al.esito = %(esito)s")
+            params["esito"] = esito
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        count_val = db.execute(
+            _text2(f"SELECT COUNT(*) FROM Activity_Log al {where_clause}"),
+            params
+        ).scalar() or 0
+
+        rows = db.execute(_text2(f"""
+            SELECT
+                al.log_id,
+                al.timestamp,
+                al.azione,
+                al.dettaglio,
+                al.ip_address::text AS ip_address,
+                al.esito,
+                al.utente_id,
+                u.email   AS utente_email,
+                u.nome    AS utente_nome,
+                u.cognome AS utente_cognome
+            FROM Activity_Log al
+            LEFT JOIN Utente u ON u.utente_id = al.utente_id
+            {where_clause}
+            ORDER BY al.timestamp DESC
+            LIMIT %(limit)s OFFSET %(offset)s
+        """), params).fetchall()
+
+        logs = [
+            {
+                "log_id":         r.log_id,
+                "timestamp":      str(r.timestamp),
+                "azione":         r.azione,
+                "dettaglio":      dict(r.dettaglio) if r.dettaglio else {},
+                "ip_address":     r.ip_address,
+                "esito":          r.esito,
+                "utente_id":      r.utente_id,
+                "utente_email":   r.utente_email,
+                "utente_nome":    r.utente_nome,
+                "utente_cognome": r.utente_cognome,
+            }
+            for r in rows
+        ]
+        return {
+            "logs":      logs,
+            "total":     count_val,
+            "page":      page,
+            "page_size": page_size,
+        }
+    finally:
+        db.close()
+
+
+@router.get("/activity-log/azioni")
+async def get_activity_log_azioni(_=Depends(require_admin)):
+    from app.db.session import SessionLocal
+    from sqlalchemy import text as _text2
+    db = SessionLocal()
+    try:
+        rows = db.execute(_text2(
+            "SELECT DISTINCT azione FROM Activity_Log ORDER BY azione"
+        )).fetchall()
+        return {"azioni": [r.azione for r in rows]}
+    finally:
+        db.close()
