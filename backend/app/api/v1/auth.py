@@ -1,14 +1,6 @@
 # app/api/v1/auth.py
 """
 Router autenticazione — OAuth2 + JWT con permessi RBAC
-======================================================
-
-NOVITÀ RISPETTO ALLA VERSIONE PRECEDENTE:
-  - JWT ora include campo 'permissions': lista codici_permesso effettivi
-  - Endpoint GET  /api/v1/auth/permissions        → matrice completa
-  - Endpoint PUT  /api/v1/auth/permissions/{id}   → salva override utente
-  - Endpoint DELETE /api/v1/auth/permissions/{id}/{cod} → rimuove override
-  - Endpoint GET  /api/v1/auth/permissions/codici → lista tutti i permessi
 """
 
 import logging
@@ -45,7 +37,7 @@ def _log(db, utente_id, azione: str, dettaglio: dict = None,
     try:
         db.execute(_text(
             "INSERT INTO Activity_Log (utente_id, azione, dettaglio, ip_address, esito) "
-            "VALUES (%(uid)s, %(azione)s, %(det)s::jsonb, %(ip)s, %(esito)s)"
+            "VALUES (:uid, :azione, CAST(:det AS jsonb), :ip, :esito)"
         ), {
             "uid":    utente_id,
             "azione": azione,
@@ -57,11 +49,9 @@ def _log(db, utente_id, azione: str, dettaglio: dict = None,
     except Exception as e:
         logger.warning(f"_log fallito ({azione}): {e}")
         try:
-            db.rollback()   # ← CRITICO: senza questo la transazione rimane
-        except Exception:   #   in stato abortito e tutte le query successive
-            pass             #   falliscono con InFailedSqlTransaction
-
-
+            db.rollback()
+        except Exception:
+            pass
 # ─────────────────────────────────────────────
 # SCHEMI PYDANTIC
 # ─────────────────────────────────────────────
@@ -100,16 +90,12 @@ class UpdateUserRequest(BaseModel):
 
 
 class PermessoOverrideRequest(BaseModel):
-    """Corpo per impostare un override su un singolo permesso."""
     codice_permesso: str
     concesso:        bool
 
 
 class BulkPermessoRequest(BaseModel):
-    """Corpo per salvare tutti gli override di un utente in una volta."""
     overrides: List[dict]
-    # Lista di { codice_permesso: str, concesso: bool | None }
-    # None = rimuove l'override (torna al default del ruolo)
 
 
 # ─────────────────────────────────────────────
@@ -165,7 +151,6 @@ def login(
         )
 
     profile     = _user_dict(user, db)
-    # ── Risolvi permessi effettivi e inseriscili nel JWT ──
     permissions = resolve_permissions(user.utente_id, db)
 
     access_token = create_access_token({
@@ -173,7 +158,7 @@ def login(
         "is_admin":      profile["is_admin"],
         "is_superadmin": profile["is_superadmin"],
         "role":          profile["role"],
-        "permissions":   permissions,          # ← NUOVO
+        "permissions":   permissions,
     })
 
     refresh_token = generate_refresh_token()
@@ -190,7 +175,7 @@ def login(
         "access_token": access_token,
         "token_type":   "bearer",
         "user":         profile,
-        "permissions":  permissions,           # ← anche nel body per il frontend
+        "permissions":  permissions,
     }
 
 
@@ -215,12 +200,10 @@ def refresh_token_endpoint(
     if not user:
         raise HTTPException(status_code=401, detail="Utente non trovato.")
 
-    # TOKEN ROTATION
     rt.revocato = True
     db.commit()
 
     profile     = _user_dict(user, db)
-    # ── Permessi aggiornati al momento del refresh ──
     permissions = resolve_permissions(user.utente_id, db)
 
     new_access = create_access_token({
@@ -228,7 +211,7 @@ def refresh_token_endpoint(
         "is_admin":      profile["is_admin"],
         "is_superadmin": profile["is_superadmin"],
         "role":          profile["role"],
-        "permissions":   permissions,          # ← NUOVO
+        "permissions":   permissions,
     })
 
     new_refresh = generate_refresh_token()
@@ -410,36 +393,12 @@ def get_permission_matrix(
     admin=Depends(require_permission("user_permissions")),
     db: Session=Depends(get_db),
 ):
-    """
-    Restituisce la matrice completa: ogni utente con tutti i permessi,
-    indicando fonte (ruolo/override_grant/override_deny/negato) e valore effettivo.
-
-    Formato risposta:
-    {
-      "permessi": ["page_chat", "doc_upload", ...],  ← lista ordinata
-      "utenti": [
-        {
-          "utente_id": 1,
-          "email": "mario@...",
-          "nome": "Mario",
-          "ruolo": "Admin",
-          "permessi": {
-            "page_chat":   { "effettivo": true,  "fonte": "ruolo" },
-            "doc_upload":  { "effettivo": false,  "fonte": "override_deny" },
-            ...
-          }
-        }
-      ]
-    }
-    """
-    # Tutti i permessi ordinati per categoria
     tutti_permessi = db.execute(_text(
         "SELECT codice_permesso, descrizione FROM Permesso ORDER BY codice_permesso"
     )).fetchall()
 
     codici = [p.codice_permesso for p in tutti_permessi]
 
-    # Matrice completa dalla view
     righe = db.execute(_text("""
         SELECT
             utente_id, email, nome, cognome, ruolo,
@@ -448,7 +407,6 @@ def get_permission_matrix(
         ORDER BY email, codice_permesso
     """)).fetchall()
 
-    # Raggruppa per utente
     utenti_map: dict = {}
     for r in righe:
         uid = r.utente_id
@@ -480,7 +438,6 @@ def get_all_permission_codes(
     _=Depends(require_permission("user_permissions")),
     db: Session=Depends(get_db),
 ):
-    """Lista di tutti i codici permesso con descrizione."""
     rows = db.execute(_text(
         "SELECT codice_permesso, descrizione FROM Permesso ORDER BY codice_permesso"
     )).fetchall()
@@ -499,17 +456,12 @@ def set_user_permission_override(
     admin      = Depends(require_permission("user_permissions")),
     db: Session = Depends(get_db),
 ):
-    """
-    Imposta un override individuale per un permesso specifico.
-    Sovrascrive se esiste già, crea se nuovo.
-    """
     from app.models.rag_models import Utente
 
     user = db.query(Utente).filter(Utente.utente_id == utente_id).first()
     if not user:
         raise HTTPException(404, detail="Utente non trovato.")
 
-    # Trova il permesso_id dal codice
     perm = db.execute(_text(
         "SELECT permesso_id FROM Permesso WHERE codice_permesso = :cod"
     ), {"cod": body.codice_permesso}).fetchone()
@@ -517,7 +469,6 @@ def set_user_permission_override(
     if not perm:
         raise HTTPException(404, detail=f"Permesso '{body.codice_permesso}' non trovato.")
 
-    # UPSERT: inserisce o aggiorna
     db.execute(_text("""
         INSERT INTO Utente_Permesso (utente_id, permesso_id, concesso, aggiornato_da, aggiornato_il)
         VALUES (:uid, :pid, :concesso, :admin_id, NOW())
@@ -534,8 +485,6 @@ def set_user_permission_override(
     })
     db.commit()
 
-    # Revoca i refresh token dell'utente modificato
-    # → al prossimo refresh otterrà il JWT con i permessi aggiornati
     revoke_all_refresh_tokens(db, utente_id)
 
     ip = request.client.host if request.client else None
@@ -564,15 +513,6 @@ def set_user_permissions_bulk(
     admin      = Depends(require_permission("user_permissions")),
     db: Session = Depends(get_db),
 ):
-    """
-    Salva tutti gli override di un utente in una sola chiamata.
-    Usato dalla matrice admin quando si salvano più permessi insieme.
-
-    body.overrides è una lista di:
-      { "codice_permesso": "doc_upload", "concesso": true/false/null }
-      - true/false → imposta override
-      - null       → rimuove override (torna al default del ruolo)
-    """
     from app.models.rag_models import Utente
 
     user = db.query(Utente).filter(Utente.utente_id == utente_id).first()
@@ -582,7 +522,7 @@ def set_user_permissions_bulk(
     modificati = 0
     for item in body.overrides:
         codice   = item.get("codice_permesso")
-        concesso = item.get("concesso")  # può essere None
+        concesso = item.get("concesso")
 
         perm = db.execute(_text(
             "SELECT permesso_id FROM Permesso WHERE codice_permesso = :cod"
@@ -591,7 +531,6 @@ def set_user_permissions_bulk(
             continue
 
         if concesso is None:
-            # Rimuovi override → torna al default del ruolo
             db.execute(_text(
                 "DELETE FROM Utente_Permesso WHERE utente_id=:uid AND permesso_id=:pid"
             ), {"uid": utente_id, "pid": perm.permesso_id})
@@ -611,7 +550,6 @@ def set_user_permissions_bulk(
 
     db.commit()
 
-    # Revoca sessioni → permessi aggiornati al prossimo refresh
     revoke_all_refresh_tokens(db, utente_id)
 
     ip = request.client.host if request.client else None
@@ -638,7 +576,6 @@ def remove_user_permission_override(
     admin            = Depends(require_permission("user_permissions")),
     db: Session      = Depends(get_db),
 ):
-    """Rimuove l'override individuale → l'utente torna al default del ruolo."""
     perm = db.execute(_text(
         "SELECT permesso_id FROM Permesso WHERE codice_permesso = :cod"
     ), {"cod": codice_permesso}).fetchone()

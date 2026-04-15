@@ -320,7 +320,7 @@ export default function PermissionMatrixPanel() {
             <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Non assegnato</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 24, height: 22, borderRadius: 5, border: "2px dashed rgba(52,211,153,0.8)", background: "rgba(52,211,153,0.08)", color: "#34d399", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.72rem", fontWeight: 700 }}>✓</span>
+            <span style={{ width: 24, height: 22, borderRadius: 5, border: "2px dashed rgba(255, 6, 6, 0.87)", background: "rgba(0, 0, 0, 0.08)", color: "#ff0000e6", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.72rem", fontWeight: 700 }}>✓</span>
             <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Modifica non salvata</span>
           </div>
         </div>

@@ -140,31 +140,33 @@ export function AuthProvider({ children }) {
 
   // ── authFetch — wrapper con refresh automatico ───────────
   const authFetch = useCallback(async (url, options = {}) => {
-    const fullUrl = url.startsWith("http") ? url : `${API}${url}`;
+  const fullUrl = url.startsWith("http") ? url : `${API}${url}`;
+  const isFormData = options.body instanceof FormData;
 
-    const makeRequest = (accessToken) => fetch(fullUrl, {
+  const makeRequest = (accessToken) => {
+    const headers = {
+      ...(options.headers || {}),
+      ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+    };
+    if (!isFormData && !headers["Content-Type"]) {
+      headers["Content-Type"] = "application/json";
+    }
+    return fetch(fullUrl, {
       ...options,
       credentials: "include",
-      headers: {
-        "Content-Type": "application/json",
-        ...(options.headers || {}),
-        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
-      },
+      headers,
     });
+  };
 
-    let res = await makeRequest(token);
-
-    if (res.status === 401) {
-      const newToken = await attemptRefresh();
-      if (!newToken) {
-        throw new Error("Sessione scaduta. Effettua nuovamente il login.");
-      }
-      await fetchMe(newToken);
-      res = await makeRequest(newToken);
-    }
-
-    return res;
-  }, [token, attemptRefresh, fetchMe]);
+  let res = await makeRequest(token);
+  if (res.status === 401) {
+    const newToken = await attemptRefresh();
+    if (!newToken) throw new Error("Sessione scaduta. Effettua nuovamente il login.");
+    await fetchMe(newToken);
+    res = await makeRequest(newToken);
+  }
+  return res;
+}, [token, attemptRefresh, fetchMe]);
 
   // ── Loading ──────────────────────────────────────────────
   if (initializing) {

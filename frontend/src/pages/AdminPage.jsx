@@ -234,6 +234,8 @@ export default function AdminPage() {
           display: activeSection === 'docs' ? 'flex' : 'none',
           flex: 1,  
           overflow: 'hidden',
+          minHeight: 0,   // ← aggiunta critica
+          height: '100%', // ← altezza esplicita
         }}>
           <AdminPanel />
         </div>

@@ -163,9 +163,6 @@ async def upload_pdf(file: UploadFile = File(...), _=Depends(require_admin)):
 
 # ─────────────────────────────────────────────
 # ENDPOINT: serve PDF al viewer
-# FIX: rimosso require_admin — il viewer carica il PDF tramite URL diretto
-# senza poter inviare header Authorization. Il PDF è già protetto dal
-# fatto che il pannello admin richiede autenticazione per essere aperto.
 # ─────────────────────────────────────────────
 
 @router.get("/pdf/{filename}")
@@ -358,7 +355,6 @@ async def load_document(
     background_tasks: BackgroundTasks,
     _=Depends(require_admin),
 ):
-    import json as json_lib
     body = await request.json()
 
     id_tipo           = body.get("id_tipo")
@@ -385,10 +381,10 @@ async def load_document(
     _jobs[job_id] = {"filename": filename, "status": "processing", "logs": []}
     _ws_connections[job_id] = []
 
-    loop      = asyncio.get_event_loop()
-    ai        = _ai_service(request)
+    loop       = asyncio.get_event_loop()
+    ai         = _ai_service(request)
     collection = _chroma_collection(request)
-    admin_svc = _admin_search(request)
+    admin_svc  = _admin_search(request)
 
     def _run_loader():
         def emit(msg: str):
@@ -621,10 +617,10 @@ async def get_activity_log(
         params: dict = {"limit": page_size, "offset": page * page_size}
 
         if azione:
-            conditions.append("al.azione = %(azione)s")
+            conditions.append("al.azione = :azione")
             params["azione"] = azione
         if esito:
-            conditions.append("al.esito = %(esito)s")
+            conditions.append("al.esito = :esito")
             params["esito"] = esito
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
@@ -650,7 +646,7 @@ async def get_activity_log(
             LEFT JOIN Utente u ON u.utente_id = al.utente_id
             {where_clause}
             ORDER BY al.timestamp DESC
-            LIMIT %(limit)s OFFSET %(offset)s
+            LIMIT :limit OFFSET :offset
         """), params).fetchall()
 
         logs = [

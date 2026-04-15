@@ -20,7 +20,7 @@ const s = {
   root: { display: "flex", flexDirection: "column", height: "100%", width: "100%", background: "var(--bg)", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", overflow: "hidden" },
   toolbar: { display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", background: "var(--surface)", borderBottom: "1px solid var(--border)", flexShrink: 0 },
   body: { display: "flex", flex: 1, overflow: "hidden", minHeight: 0 },
-  sidebar: { width: "280px", flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--surface)", borderRight: "1px solid var(--border)", overflow: "hidden", height: "100%" },
+  sidebar: { width: "280px", flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--surface)", borderRight: "1px solid var(--border)", overflow: "hidden", height: "100%", minHeight: 0 },
   sidebarHeader: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px 10px", borderBottom: "1px solid var(--border)", flexShrink: 0 },
   sidebarTitle: { fontSize: "0.88rem", fontWeight: 600, color: "var(--text)" },
   sidebarCount: { fontSize: "0.72rem", color: "var(--text-muted)", marginTop: 2 },
@@ -44,7 +44,7 @@ const s = {
   chunkBanner: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 16px", background: "rgba(79,142,247,0.1)", borderBottom: "1px solid rgba(79,142,247,0.25)", flexShrink: 0, gap: 10 },
   chunkBannerText: { fontSize: "0.72rem", color: "var(--accent)", fontFamily: "'DM Mono', monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 },
   chunkBannerClear: { background: "none", border: "none", cursor: "pointer", color: "var(--text-muted)", fontSize: "0.75rem", padding: "2px 6px", borderRadius: 4, flexShrink: 0, transition: "color 0.15s" },
-  right: { width: "400px", flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--surface)", overflow: "hidden", height: "100%" },
+  right: { width: "400px", flexShrink: 0, display: "flex", flexDirection: "column", background: "var(--surface)", overflow: "hidden", height: "100%", minHeight: 0 },
   rightHeader: { padding: "14px 16px", borderBottom: "1px solid var(--border)", flexShrink: 0 },
   rightFilename: { fontSize: "0.82rem", fontWeight: 600, color: "var(--text)", wordBreak: "break-all", lineHeight: 1.4, marginBottom: 4 },
   rightSize: { fontSize: "0.7rem", color: "var(--text-muted)" },
@@ -747,33 +747,86 @@ export default function AdminPanel() {
   const [leftOpen, setLeftOpen]       = useState(true)
   const [rightOpen, setRightOpen]     = useState(true)
   const [activeChunk, setActiveChunk] = useState(null)
-
+  const pollingRef                    = useRef(null)
+ 
+  // ── Fetch lista PDF dal server ──────────────────────────────
+  // Non resetta la selezione corrente: aggiorna in modo
+  // non distruttivo sia la lista che il documento selezionato.
   const fetchPdfs = useCallback(async () => {
     try {
-      const res  = await authFetch("/api/v1/admin/pdfs")
-      const data = await res.json()
-      setPdfs(data.pdfs || [])
-    } catch (e) { console.error("Fetch pdfs error:", e) }
+      const res     = await authFetch("/api/v1/admin/pdfs")
+      const data    = await res.json()
+      const newPdfs = data.pdfs || []
+      setPdfs(newPdfs)
+      setSelected(prev => {
+        if (!prev) return prev
+        const fresh = newPdfs.find(p => p.filename === prev.filename)
+        return fresh ? { ...fresh } : prev
+      })
+      return newPdfs
+    } catch (e) {
+      console.error("Fetch pdfs error:", e)
+      return []
+    }
   }, [authFetch])
-
+ 
+  // Mount: carica lista PDF al primo render
   useEffect(() => { fetchPdfs() }, [fetchPdfs])
-
-  const handleSelect = (pdf) => { setSelected(pdf); setActiveChunk(null) }
-
-  const handleStatusChange = useCallback(async (filename, newStatus) => {
-    setPdfs(prev => prev.map(p => p.filename === filename ? { ...p, status: newStatus } : p))
-    setSelected(prev => prev?.filename === filename ? { ...prev, status: newStatus } : prev)
-    try {
-      const res  = await authFetch("/api/v1/admin/pdfs")
-      const data = await res.json()
-      if (data.pdfs) {
-        setPdfs(data.pdfs)
-        const fresh = data.pdfs.find(p => p.filename === filename)
-        if (fresh) setSelected(fresh)
+ 
+  // ── Polling automatico ──────────────────────────────────────
+  // Si attiva ogni 3s quando almeno un PDF risulta "processing".
+  // Si ferma automaticamente quando non ci sono più stati in
+  // transizione, evitando polling inutile a riposo.
+  useEffect(() => {
+    const hasProcessing = pdfs.some(p => p.status === "processing")
+ 
+    if (hasProcessing) {
+      // Avvia solo se non già attivo
+      if (!pollingRef.current) {
+        pollingRef.current = setInterval(async () => {
+          const fresh = await fetchPdfs()
+          // Auto-stop: nessun PDF ancora in processing
+          if (!fresh.some(p => p.status === "processing")) {
+            clearInterval(pollingRef.current)
+            pollingRef.current = null
+          }
+        }, 3000)
       }
-    } catch (e) { console.error("Refresh pdfs after status change error:", e) }
-  }, [authFetch])
-
+    } else {
+      // Nessun processing → ferma il polling se attivo
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+        pollingRef.current = null
+      }
+    }
+ 
+    // Cleanup al unmount
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current)
+        pollingRef.current = null
+      }
+    }
+  }, [pdfs, fetchPdfs])
+ 
+  // ── Aggiornamento stato dopo un'azione ──────────────────────
+  // 1) Aggiornamento ottimistico immediato per UX responsiva.
+  // 2) Fetch reale dal server per sincronizzare i dati veri.
+  // Il polling poi continuerà finché lo stato è "processing".
+  const handleStatusChange = useCallback(async (filename, newStatus) => {
+    // Ottimistico
+    setPdfs(prev => prev.map(p =>
+      p.filename === filename ? { ...p, status: newStatus } : p
+    ))
+    setSelected(prev =>
+      prev?.filename === filename ? { ...prev, status: newStatus } : prev
+    )
+    // Sincronizzazione reale con il server
+    await fetchPdfs()
+  }, [fetchPdfs])
+ 
+  const handleSelect = (pdf) => { setSelected(pdf); setActiveChunk(null) }
+ 
   return (
     <div style={s.root}>
       <div style={s.toolbar}>
@@ -789,31 +842,40 @@ export default function AdminPanel() {
           </div>
         )}
       </div>
-
+ 
       <div style={s.body}>
         {leftOpen && (
           <Sidebar
             pdfs={pdfs}
             selected={selected}
             onSelect={handleSelect}
-            onUploaded={(doc) => setPdfs(prev => prev.find(p => p.filename === doc.filename) ? prev : [...prev, doc])}
+            onUploaded={(doc) => {
+              setPdfs(prev =>
+                prev.find(p => p.filename === doc.filename) ? prev : [...prev, doc]
+              )
+            }}
             onRefresh={fetchPdfs}
           />
         )}
-
+ 
         {selected ? (
-          <PdfViewer filename={selected.filename} activeChunk={activeChunk} onClearChunk={() => setActiveChunk(null)} />
+          <PdfViewer
+            filename={selected.filename}
+            activeChunk={activeChunk}
+            onClearChunk={() => setActiveChunk(null)}
+          />
         ) : (
           <div style={{ ...s.viewer }}>
             <div style={s.viewerEmpty}>
               <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" style={{ opacity: 0.15 }}>
-                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
               </svg>
               <p style={{ fontSize: "0.82rem" }}>Seleziona un PDF per visualizzarlo</p>
             </div>
           </div>
         )}
-
+ 
         {rightOpen && (
           <RightPanel
             pdf={selected}
