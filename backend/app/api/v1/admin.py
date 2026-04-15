@@ -2,6 +2,7 @@
 import os
 import uuid
 import asyncio
+import json as _json
 import logging
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from fastapi import (
     Request, Depends
 )
 from fastapi.responses import FileResponse
+from sqlalchemy import text as _text
 
 from app.services.auth_service import require_admin
 
@@ -35,6 +37,54 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _jobs: dict[str, dict] = {}
 _ws_connections: dict[str, list[WebSocket]] = {}
+
+
+# ─────────────────────────────────────────────
+# HELPER: log attività (condiviso con auth.py)
+# ─────────────────────────────────────────────
+
+def _log(
+    utente_id,
+    azione: str,
+    dettaglio: dict = None,
+    ip_address: str = None,
+    esito: str = "ok",
+):
+    """
+    Scrive un evento in Activity_Log.
+    Apre una sessione autonoma per non interferire con la transazione
+    principale dell'endpoint (specialmente nei background task).
+    """
+    from app.db.session import SessionLocal
+    db = SessionLocal()
+    try:
+        db.execute(_text(
+            "INSERT INTO Activity_Log (utente_id, azione, dettaglio, ip_address, esito) "
+            "VALUES (:uid, :azione, CAST(:det AS jsonb), :ip, :esito)"
+        ), {
+            "uid":    utente_id,
+            "azione": azione,
+            "det":    _json.dumps(dettaglio or {}),
+            "ip":     ip_address,
+            "esito":  esito,
+        })
+        db.commit()
+    except Exception as e:
+        logger.warning(f"_log fallito ({azione}): {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def _ip(request: Request) -> str:
+    """Estrae l'IP del client normalizzato (senza prefisso CIDR)."""
+    raw = request.client.host if request.client else None
+    if raw and "/" in raw:
+        raw = raw.split("/")[0]
+    return raw
 
 
 # ─────────────────────────────────────────────
@@ -147,16 +197,29 @@ async def list_jobs(_=Depends(require_admin)):
 # ─────────────────────────────────────────────
 
 @router.post("/upload")
-async def upload_pdf(file: UploadFile = File(...), _=Depends(require_admin)):
+async def upload_pdf(
+    request: Request,
+    file: UploadFile = File(...),
+    admin=Depends(require_admin),
+):
     if not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Solo file PDF accettati.")
     dest    = PDF_DIR / file.filename
     content = await file.read()
     dest.write_bytes(content)
-    logger.info(f"Upload: {file.filename} ({len(content)//1024} KB)")
+    size_kb = round(len(content) / 1024, 1)
+    logger.info(f"Upload: {file.filename} ({size_kb} KB)")
+
+    _log(
+        utente_id  = admin.utente_id,
+        azione     = "doc_upload",
+        dettaglio  = {"filename": file.filename, "size_kb": size_kb},
+        ip_address = _ip(request),
+    )
+
     return {
         "filename": file.filename,
-        "size_kb":  round(len(content) / 1024, 1),
+        "size_kb":  size_kb,
         "status":   "not_ingested",
     }
 
@@ -196,12 +259,19 @@ async def _broadcast(job_id: str, message: str):
         _ws_connections[job_id].remove(ws)
 
 
-def _run_ingestion_sync(job_id: str, pdf_path: str, loop: asyncio.AbstractEventLoop):
+def _run_ingestion_sync(
+    job_id: str,
+    pdf_path: str,
+    loop: asyncio.AbstractEventLoop,
+    utente_id: int,
+    ip_address: str,
+):
     def emit(msg: str):
         asyncio.run_coroutine_threadsafe(_broadcast(job_id, msg), loop)
 
+    filename = Path(pdf_path).name
     try:
-        emit(f"▶ Avvio pipeline: {Path(pdf_path).name}")
+        emit(f"▶ Avvio pipeline: {filename}")
 
         from app.services.marker_service import converti_pdf
         result = converti_pdf(pdf_path, str(OUTPUT_DIR), emit=emit)
@@ -216,18 +286,34 @@ def _run_ingestion_sync(job_id: str, pdf_path: str, loop: asyncio.AbstractEventL
         )
 
         from app.services.chunker_service import chunking_e_indicizzazione
-        chunking_e_indicizzazione(
+        chunks_data = chunking_e_indicizzazione(
             md_path=md_fixed,
             output_dir=str(OUTPUT_DIR),
             emit=emit,
         )
 
+        n_rag = chunks_data["documento"]["n_frammenti_rag"]
         emit("🎉 Pipeline completata! Usa il loader per indicizzare in ChromaDB.")
         _jobs[job_id]["status"] = "done"
+
+        _log(
+            utente_id  = utente_id,
+            azione     = "doc_ingestion",
+            dettaglio  = {"filename": filename, "n_frammenti_rag": n_rag},
+            ip_address = ip_address,
+        )
 
     except Exception as e:
         emit(f"❌ Errore pipeline: {e}")
         _jobs[job_id]["status"] = "error"
+
+        _log(
+            utente_id  = utente_id,
+            azione     = "doc_ingestion",
+            dettaglio  = {"filename": filename, "errore": str(e)},
+            ip_address = ip_address,
+            esito      = "error",
+        )
 
 
 # ─────────────────────────────────────────────
@@ -239,7 +325,7 @@ async def ingest_pdf(
     filename: str,
     request: Request,
     background_tasks: BackgroundTasks,
-    _=Depends(require_admin),
+    admin=Depends(require_admin),
 ):
     path = PDF_DIR / filename
     if not path.exists():
@@ -260,6 +346,8 @@ async def ingest_pdf(
         job_id,
         str(path),
         loop,
+        admin.utente_id,
+        _ip(request),
     )
     return {"job_id": job_id, "filename": filename, "status": "processing"}
 
@@ -353,7 +441,7 @@ async def load_document(
     filename: str,
     request: Request,
     background_tasks: BackgroundTasks,
-    _=Depends(require_admin),
+    admin=Depends(require_admin),
 ):
     body = await request.json()
 
@@ -385,6 +473,8 @@ async def load_document(
     ai         = _ai_service(request)
     collection = _chroma_collection(request)
     admin_svc  = _admin_search(request)
+    utente_id  = admin.utente_id
+    ip         = _ip(request)
 
     def _run_loader():
         def emit(msg: str):
@@ -408,13 +498,40 @@ async def load_document(
                 _jobs[job_id]["status"] = "done"
                 admin_svc.reload()
 
+                _log(
+                    utente_id  = utente_id,
+                    azione     = "doc_load",
+                    dettaglio  = {
+                        "filename":     filename,
+                        "documento_id": result["documento_id"],
+                        "n_frammenti":  result["n_frammenti"],
+                        "id_livello":   id_livello,
+                        "sovrascritto": forza_sovrascrivi,
+                    },
+                    ip_address = ip,
+                )
+
             except DuplicatoError as e:
                 emit(f"__DUPLICATO__{e.dove}__{e.documento_id or ''}")
                 _jobs[job_id]["status"] = "duplicato"
+                _log(
+                    utente_id  = utente_id,
+                    azione     = "doc_load",
+                    dettaglio  = {"filename": filename, "motivo": f"duplicato in {e.dove}"},
+                    ip_address = ip,
+                    esito      = "warning",
+                )
 
         except Exception as e:
             emit(f"❌ Errore loader: {e}")
             _jobs[job_id]["status"] = "error"
+            _log(
+                utente_id  = utente_id,
+                azione     = "doc_load",
+                dettaglio  = {"filename": filename, "errore": str(e)},
+                ip_address = ip,
+                esito      = "error",
+            )
 
     background_tasks.add_task(loop.run_in_executor, None, _run_loader)
     return {"job_id": job_id, "filename": filename, "status": "processing"}
@@ -444,7 +561,11 @@ async def get_sync_status(request: Request, _=Depends(require_admin)):
 # ─────────────────────────────────────────────
 
 @router.delete("/document/{filename}")
-async def delete_document_full(filename: str, request: Request, _=Depends(require_admin)):
+async def delete_document_full(
+    filename: str,
+    request: Request,
+    admin=Depends(require_admin),
+):
     from app.db.session import SessionLocal
     from app.models.rag_models import Documento
     from app.services.loader_service import _elimina_chroma_per_titolo, _log_sync
@@ -496,7 +617,7 @@ async def delete_document_full(filename: str, request: Request, _=Depends(requir
             removed.append(f"postgres (documento_id={documento_id})")
         else:
             titolo_doc = titolo_doc or stem
-            errors.append(f"PostgreSQL: nessun record trovato")
+            errors.append("PostgreSQL: nessun record trovato")
     except Exception as e:
         errors.append(f"PostgreSQL: {e}")
         titolo_doc = titolo_doc or stem
@@ -510,6 +631,19 @@ async def delete_document_full(filename: str, request: Request, _=Depends(requir
         admin_svc.delete_document(stem)
     except Exception as e:
         errors.append(f"ChromaDB: {e}")
+
+    _log(
+        utente_id  = admin.utente_id,
+        azione     = "doc_delete",
+        dettaglio  = {
+            "filename":     filename,
+            "titolo":       titolo_doc,
+            "documento_id": documento_id,
+            "rimosso_da":   removed,
+        },
+        ip_address = _ip(request),
+        esito      = "ok" if not errors else "warning",
+    )
 
     return {"filename": filename, "removed": removed, "errors": errors, "ok": len(errors) == 0}
 
@@ -538,7 +672,7 @@ async def get_document_metadata(filename: str, request: Request, _=Depends(requi
             else:
                 doc = db.query(Documento).filter(Documento.titolo.ilike(f"%{stem}%")).first()
         if not doc:
-            raise HTTPException(status_code=404, detail=f"Documento non trovato in PostgreSQL.")
+            raise HTTPException(status_code=404, detail="Documento non trovato in PostgreSQL.")
         return {
             "documento_id":  doc.documento_id,
             "titolo":        doc.titolo,
@@ -558,7 +692,11 @@ async def get_document_metadata(filename: str, request: Request, _=Depends(requi
 # ─────────────────────────────────────────────
 
 @router.put("/document/{filename}")
-async def update_document(filename: str, request: Request, _=Depends(require_admin)):
+async def update_document(
+    filename: str,
+    request: Request,
+    admin=Depends(require_admin),
+):
     body = await request.json()
 
     documento_id  = body.get("documento_id")
@@ -590,8 +728,28 @@ async def update_document(filename: str, request: Request, _=Depends(require_adm
             data_scadenza     = data_scadenza,
             chroma_collection = collection,
         )
+
+        _log(
+            utente_id  = admin.utente_id,
+            azione     = "doc_update",
+            dettaglio  = {
+                "filename":     filename,
+                "documento_id": documento_id,
+                "versione":     versione,
+                "id_livello":   id_livello,
+            },
+            ip_address = _ip(request),
+        )
+
         return result
     except Exception as e:
+        _log(
+            utente_id  = admin.utente_id,
+            azione     = "doc_update",
+            dettaglio  = {"filename": filename, "documento_id": documento_id, "errore": str(e)},
+            ip_address = _ip(request),
+            esito      = "error",
+        )
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -606,6 +764,7 @@ async def get_activity_log(
     page_size: int = 50,
     azione: str = "",
     esito: str = "",
+    utente: str = "",
     _=Depends(require_admin),
 ):
     from app.db.session import SessionLocal
@@ -622,11 +781,23 @@ async def get_activity_log(
         if esito:
             conditions.append("al.esito = :esito")
             params["esito"] = esito
+        if utente:
+            conditions.append(
+                "(LOWER(u.email) LIKE :utente "
+                "OR LOWER(u.nome) LIKE :utente "
+                "OR LOWER(u.cognome) LIKE :utente)"
+            )
+            params["utente"] = f"%{utente.lower()}%"
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
         count_val = db.execute(
-            _text2(f"SELECT COUNT(*) FROM Activity_Log al {where_clause}"),
+            _text2(f"""
+                SELECT COUNT(*)
+                FROM Activity_Log al
+                LEFT JOIN Utente u ON u.utente_id = al.utente_id
+                {where_clause}
+            """),
             params
         ).scalar() or 0
 
@@ -655,7 +826,7 @@ async def get_activity_log(
                 "timestamp":      str(r.timestamp),
                 "azione":         r.azione,
                 "dettaglio":      dict(r.dettaglio) if r.dettaglio else {},
-                "ip_address":     r.ip_address,
+                "ip_address":     (r.ip_address or "").split("/")[0],  # normalizza CIDR
                 "esito":          r.esito,
                 "utente_id":      r.utente_id,
                 "utente_email":   r.utente_email,
