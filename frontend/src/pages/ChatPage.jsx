@@ -5,7 +5,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { useChat } from '../context/ChatContext'
 import { useAuth } from '../context/AuthContext'   // ← NUOVO
-
+import ThemeToggle from "../components/ThemeToggle";
 const BASE_SERVER_URL = 'http://127.0.0.1:8080'
 
 const formatBotResponse = (text) => {
@@ -372,6 +372,7 @@ export default function ChatPage() {
           <div className="session-badge" style={{ marginTop: '8px' }}>
             ID: {sessionId}
           </div>
+          <ThemeToggle />
         </div>
       </aside>
 

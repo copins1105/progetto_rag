@@ -7,18 +7,20 @@ import App from "./App.jsx";
 import { AuthProvider }      from "./context/AuthContext.jsx";
 import { IngestionProvider } from "./context/IngestionContext.jsx";
 import { ChatProvider }      from "./context/ChatContext.jsx";
-
+import { ThemeProvider } from "./context/ThemeContext";
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <BrowserRouter>
       {/* AuthProvider avvolge tutto: token disponibile ovunque */}
-      <AuthProvider>
-        <IngestionProvider>
-          <ChatProvider>
-            <App />
-          </ChatProvider>
-        </IngestionProvider>
-      </AuthProvider>
+      <ThemeProvider>
+        <AuthProvider>
+          <IngestionProvider>
+            <ChatProvider>
+              <App />
+            </ChatProvider>
+          </IngestionProvider>
+        </AuthProvider>
+       </ThemeProvider>
     </BrowserRouter>
   </StrictMode>
 );

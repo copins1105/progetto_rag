@@ -2,6 +2,7 @@
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import "../App.css";
+import logo from "../assets/Logo Exprivia pulito.png";
 
 export default function Login() {
   const { login } = useAuth();
