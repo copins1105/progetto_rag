@@ -14,6 +14,7 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy import text as _text
 
+from app.services.auth_service import require_admin, get_admin_scope
 
 logger = logging.getLogger(__name__)
 
