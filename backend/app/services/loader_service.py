@@ -7,6 +7,7 @@ Versione servizio di runloader3_marker.py — senza input interattivi.
 Riceve i parametri dal frontend (tipo, livello, date) e:
   1. Controlla duplicati su PostgreSQL e ChromaDB (Idea 3)
   2. Salva il documento in PostgreSQL con sync_status='pending'
+     e id_utente_caricamento = Admin che ha fatto il caricamento
   3. Genera embedding e carica i frammenti in ChromaDB
   4. Aggiorna sync_status='synced' se tutto ok
   5. In caso di errore fa rollback atomico su entrambi i DB (Idea 1)
@@ -99,7 +100,7 @@ def _log_sync(
 class DuplicatoError(Exception):
     """Sollevata quando il documento esiste già in uno o entrambi i DB."""
     def __init__(self, dove: str, documento_id: Optional[int] = None):
-        self.dove = dove          # 'postgres' | 'chroma' | 'entrambi'
+        self.dove = dove
         self.documento_id = documento_id
         super().__init__(f"Documento già presente in: {dove}")
 
@@ -110,19 +111,13 @@ def controlla_duplicati(
     titolo: str,
     versione: str,
 ) -> None:
-    """
-    Controlla se il documento esiste già in PostgreSQL e/o ChromaDB.
-    Solleva DuplicatoError con campo 'dove' che indica dove è stato trovato.
-    """
     from app.models.rag_models import Documento
 
     in_postgres = db.query(Documento).filter_by(
         titolo=titolo, versione=versione
     ).first()
 
-    # Cerca in ChromaDB per titolo_documento
     in_chroma = False
-    chroma_results = None
     try:
         chroma_results = chroma_collection.get(
             where={"titolo_documento": {"$eq": titolo}},
@@ -155,32 +150,30 @@ def carica_documento(
     chroma_collection,
     emit: Callable[[str], None] = print,
     forza_sovrascrivi: bool = False,
+    # NUOVO: Admin owner del documento
+    id_utente_caricamento: Optional[int] = None,
 ) -> dict:
     """
     Carica un documento da JSON in PostgreSQL e ChromaDB.
 
     Args:
-        json_path:        percorso al *_chunks.json in output_json
-        id_tipo:          id tipo documento da PostgreSQL
-        id_livello:       id livello riservatezza da PostgreSQL
-        data_validita:    stringa data validità (es. "2024-01-01")
-        data_scadenza:    stringa data scadenza (opzionale)
-        ai_service:       istanza AIService per gli embedding
-        chroma_collection: collezione ChromaDB già aperta
-        emit:             callback log per WebSocket
-        forza_sovrascrivi: se True, elimina e ricarica se già presente
+        json_path:               percorso al *_chunks.json in output_json
+        id_tipo:                 id tipo documento da PostgreSQL
+        id_livello:              id livello riservatezza da PostgreSQL
+        data_validita:           stringa data validità (es. "2024-01-01")
+        data_scadenza:           stringa data scadenza (opzionale)
+        ai_service:              istanza AIService per gli embedding
+        chroma_collection:       collezione ChromaDB già aperta
+        emit:                    callback log per WebSocket
+        forza_sovrascrivi:       se True, elimina e ricarica se già presente
+        id_utente_caricamento:   utente_id dell'Admin che ha caricato (ownership)
 
     Returns:
         { "documento_id": int, "n_frammenti": int, "status": "ok" }
-
-    Raises:
-        DuplicatoError se il documento esiste già (e forza_sovrascrivi=False)
-        Exception per altri errori
     """
     from app.db.session import SessionLocal
     from app.models.rag_models import Documento, TipoDocumento, LivelloRiservatezza
 
-    # ── Lettura JSON ─────────────────────────────────────────
     emit("📂 Lettura JSON chunks...")
     try:
         data = json.loads(Path(json_path).read_text(encoding="utf-8"))
@@ -196,7 +189,6 @@ def carica_documento(
 
     emit(f"📄 Documento: {titolo} v{versione} — {len(frammenti_rag)} frammenti RAG")
 
-    # ── Parse date ───────────────────────────────────────────
     data_val  = safe_parse_date(data_validita)
     data_sca  = safe_parse_date(data_scadenza)
 
@@ -211,28 +203,27 @@ def carica_documento(
     nuovo_doc_id = None
 
     try:
-        # ── Controllo duplicati ──────────────────────────────
         emit("🔍 Controllo duplicati...")
         try:
             controlla_duplicati(db, chroma_collection, titolo, versione)
         except DuplicatoError as e:
             if not forza_sovrascrivi:
                 raise
-            # Sovrascrivi: elimina prima da entrambi i DB
             emit(f"⚠️  Documento già presente in {e.dove} — sovrascrittura in corso...")
             _elimina_esistente(db, chroma_collection, titolo, versione, e.documento_id, emit)
 
-        # ── POSTGRESQL: salva con sync_status='pending' ──────
         emit("💾 Salvataggio in PostgreSQL...")
         nuovo_doc = Documento(
-            titolo               = titolo,
-            versione             = versione,
-            id_tipo              = id_tipo,
-            id_livello           = id_livello,
-            data_validita_inizio = data_val,
-            data_scadenza        = data_sca,
-            is_archiviato        = False,
-            sync_status          = "pending",  # diventa 'synced' solo dopo ChromaDB
+            titolo                = titolo,
+            versione              = versione,
+            id_tipo               = id_tipo,
+            id_livello            = id_livello,
+            data_validita_inizio  = data_val,
+            data_scadenza         = data_sca,
+            is_archiviato         = False,
+            sync_status           = "pending",
+            # Ownership: salva quale Admin ha caricato il documento
+            id_utente_caricamento = id_utente_caricamento,
         )
         db.add(nuovo_doc)
         db.commit()
@@ -240,7 +231,6 @@ def carica_documento(
         nuovo_doc_id = nuovo_doc.documento_id
         emit(f"✅ PostgreSQL: documento_id={nuovo_doc_id}")
 
-        # ── CHROMADB: genera embedding e carica ─────────────
         if frammenti_rag:
             emit(f"🧠 Generazione embedding per {len(frammenti_rag)} frammenti...")
             texts_to_embed = [f["testo_embedding"] for f in frammenti_rag]
@@ -267,6 +257,8 @@ def carica_documento(
                     "h3"              : frag.get("h3") or "",
                     "keywords"        : ", ".join(frag.get("keywords") or []),
                     "chunk_index"     : str(frag.get("chunk_index", i)),
+                    # Salva owner anche nei metadati ChromaDB per future query
+                    "utente_caricamento": str(id_utente_caricamento) if id_utente_caricamento else "",
                 })
 
             chroma_collection.add(
@@ -279,11 +271,9 @@ def carica_documento(
         else:
             emit("⚠️  Nessun frammento RAG trovato nel JSON")
 
-        # ── Aggiorna sync_status → 'synced' ─────────────────
         nuovo_doc.sync_status = "synced"
         db.commit()
 
-        # ── Log successo ─────────────────────────────────────
         _log_sync(db, nuovo_doc_id, "load", f"Caricati {len(frammenti_rag)} frammenti", "ok")
         emit("🎉 Caricamento completato con successo!")
 
@@ -297,11 +287,9 @@ def carica_documento(
         raise
 
     except Exception as e:
-        # ── ROLLBACK ATOMICO ─────────────────────────────────
         emit(f"❌ Errore: {e} — rollback in corso...")
         db.rollback()
 
-        # Se PostgreSQL era già stato scritto, elimina anche da ChromaDB
         if nuovo_doc_id:
             try:
                 _elimina_chroma_per_titolo(chroma_collection, titolo)
@@ -309,9 +297,9 @@ def carica_documento(
             except Exception as ce:
                 emit(f"⚠️  ChromaDB rollback parziale: {ce}")
 
-            # Aggiorna sync_status → 'error' se il record esiste ancora
             try:
-                doc = db.query(Documento).get(nuovo_doc_id)
+                from app.models.rag_models import Documento as _Doc
+                doc = db.query(_Doc).get(nuovo_doc_id)
                 if doc:
                     doc.sync_status = "error"
                     db.commit()
@@ -327,7 +315,6 @@ def carica_documento(
 # ─────────────────────────────────────────────
 
 def _elimina_chroma_per_titolo(chroma_collection, titolo: str) -> int:
-    """Elimina tutti i chunk di un titolo da ChromaDB. Ritorna n chunk eliminati."""
     results = chroma_collection.get(
         where={"titolo_documento": {"$eq": titolo}},
         include=[],
@@ -346,16 +333,11 @@ def _elimina_esistente(
     documento_id: Optional[int],
     emit: Callable,
 ) -> None:
-    """
-    Elimina un documento esistente da entrambi i DB prima della sovrascrittura.
-    """
     from app.models.rag_models import Documento
 
-    # Elimina da ChromaDB
     n = _elimina_chroma_per_titolo(chroma_collection, titolo)
     emit(f"  ↩️  ChromaDB: eliminati {n} chunk esistenti")
 
-    # Elimina da PostgreSQL
     if documento_id:
         doc = db.query(Documento).get(documento_id)
         if doc:
@@ -380,15 +362,7 @@ def aggiorna_documento(
 ) -> dict:
     """
     Aggiorna i metadati di un documento esistente in PostgreSQL e ChromaDB.
-
-    Aggiorna in PostgreSQL: id_tipo, id_livello, versione, date
-    Aggiorna in ChromaDB:   id_tipo, id_livello, versione (su tutti i chunk)
-
-    Controllo duplicati: verifica che non esista già un altro documento
-    con stesso titolo + versione (escludendo il documento corrente).
-
-    Returns:
-        { "documento_id": int, "n_chunk_aggiornati": int, "status": "ok" }
+    Non modifica l'owner (id_utente_caricamento).
     """
     from app.db.session import SessionLocal
     from app.models.rag_models import Documento
@@ -405,7 +379,6 @@ def aggiorna_documento(
 
     db = SessionLocal()
     try:
-        # ── Recupera documento esistente ─────────────────────
         doc = db.query(Documento).filter_by(documento_id=documento_id).first()
         if not doc:
             raise Exception(f"Documento con id={documento_id} non trovato in PostgreSQL.")
@@ -413,9 +386,6 @@ def aggiorna_documento(
         titolo = doc.titolo
         emit(f"📄 Aggiornamento: {titolo} (id={documento_id})")
 
-        # ── Controllo duplicati versione ─────────────────────
-        # Cerca altro documento con stesso titolo + nuova versione
-        # (escludi il documento corrente)
         if versione != doc.versione:
             emit(f"🔍 Controllo duplicati versione {versione}...")
             duplicato = db.query(Documento).filter(
@@ -429,7 +399,6 @@ def aggiorna_documento(
                     f"(documento_id={duplicato.documento_id})."
                 )
 
-        # ── Aggiorna PostgreSQL ──────────────────────────────
         emit("💾 Aggiornamento PostgreSQL...")
         doc.id_tipo              = id_tipo
         doc.id_livello           = id_livello
@@ -440,7 +409,6 @@ def aggiorna_documento(
         db.commit()
         emit(f"✅ PostgreSQL aggiornato")
 
-        # ── Aggiorna ChromaDB ────────────────────────────────
         emit("🔄 Aggiornamento metadati ChromaDB...")
         try:
             results = chroma_collection.get(
@@ -451,7 +419,6 @@ def aggiorna_documento(
             metas = results.get("metadatas", [])
 
             if ids:
-                # Aggiorna solo i campi modificati mantenendo il resto invariato
                 nuovi_metas = []
                 for meta in metas:
                     meta_aggiornato = dict(meta)
@@ -469,15 +436,12 @@ def aggiorna_documento(
                 emit("⚠️  Nessun chunk trovato in ChromaDB per questo documento")
 
         except Exception as ce:
-            # ChromaDB fallito → rollback PostgreSQL
             emit(f"❌ ChromaDB fallito: {ce} — rollback PostgreSQL...")
-            doc.id_tipo              = doc.id_tipo
-            doc.sync_status          = "error"
+            doc.sync_status = "error"
             db.commit()
             _log_sync(db, documento_id, "update_rollback", str(ce), "error")
             raise Exception(f"Aggiornamento ChromaDB fallito: {ce}")
 
-        # ── Sync status → synced ─────────────────────────────
         doc.sync_status = "synced"
         db.commit()
         _log_sync(db, documento_id, "update", f"Aggiornati {len(ids)} chunk", "ok")
