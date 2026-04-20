@@ -14,7 +14,6 @@ from fastapi import (
 from fastapi.responses import FileResponse
 from sqlalchemy import text as _text
 
-from app.services.auth_service import require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +39,7 @@ _ws_connections: dict[str, list[WebSocket]] = {}
 
 
 # ─────────────────────────────────────────────
-# HELPER: log attività (condiviso con auth.py)
+# HELPER: log attività
 # ─────────────────────────────────────────────
 
 def _log(
@@ -50,11 +49,6 @@ def _log(
     ip_address: str = None,
     esito: str = "ok",
 ):
-    """
-    Scrive un evento in Activity_Log.
-    Apre una sessione autonoma per non interferire con la transazione
-    principale dell'endpoint (specialmente nei background task).
-    """
     from app.db.session import SessionLocal
     db = SessionLocal()
     try:
@@ -80,7 +74,6 @@ def _log(
 
 
 def _ip(request: Request) -> str:
-    """Estrae l'IP del client normalizzato (senza prefisso CIDR)."""
     raw = request.client.host if request.client else None
     if raw and "/" in raw:
         raw = raw.split("/")[0]
@@ -153,13 +146,84 @@ def _resolve_documento_id_from_chroma(stem: str, admin_svc) -> int | None:
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: lista PDF
+# HELPER: carica documenti filtrati per owner
+# ─────────────────────────────────────────────
+
+def _get_documenti_owner(owner_filter: int | None, db) -> list:
+    """
+    Restituisce i record Documento visibili dall'admin corrente.
+    owner_filter=None → SuperAdmin → tutti i documenti.
+    owner_filter=utente_id → Admin → solo i suoi.
+    """
+    from app.models.rag_models import Documento
+    query = db.query(Documento).filter(Documento.is_archiviato == False)
+    if owner_filter is not None:
+        query = query.filter(Documento.id_utente_caricamento == owner_filter)
+    return query.all()
+
+
+def _get_titoli_owner(owner_filter: int | None, db) -> set:
+    """Restituisce i titoli dei documenti visibili dall'admin."""
+    docs = _get_documenti_owner(owner_filter, db)
+    return {d.titolo for d in docs}
+
+
+# ─────────────────────────────────────────────
+# ENDPOINT: lista PDF (filtrata per owner)
 # ─────────────────────────────────────────────
 
 @router.get("/pdfs")
-async def list_pdfs(request: Request, _=Depends(require_admin)):
+async def list_pdfs(request: Request, admin=Depends(require_admin)):
+    from app.db.session import SessionLocal
     admin_svc = _admin_search(request)
-    pdf_files = sorted(PDF_DIR.glob("*.pdf"))
+    scope     = get_admin_scope(admin, SessionLocal())
+
+    # Tutti i PDF fisici presenti
+    all_pdf_files = sorted(PDF_DIR.glob("*.pdf"))
+
+    # Se non SuperAdmin: filtra per i PDF associati ai documenti dell'Admin
+    if scope["owner_filter"] is not None:
+        db = SessionLocal()
+        try:
+            titoli_miei = _get_titoli_owner(scope["owner_filter"], db)
+            # Filtra: mantieni solo i PDF il cui stem è associato a un titolo dell'Admin
+            # oppure che non sono ancora stati caricati (not_ingested) ma sono stati
+            # caricati fisicamente dall'Admin (tracciato in job recenti).
+            # Per semplicità: mostriamo i PDF non ancora nel DB + quelli dell'Admin nel DB.
+            stems_miei = {admin_svc._resolve_title(Path(f.name).stem) for f in all_pdf_files}
+
+            # Recupera gli stem dei documenti dell'Admin in PostgreSQL
+            from app.models.rag_models import Documento
+            docs_admin = db.query(Documento).filter(
+                Documento.id_utente_caricamento == scope["owner_filter"],
+                Documento.is_archiviato == False,
+            ).all()
+            titoli_admin = {d.titolo for d in docs_admin}
+
+            def _pdf_belongs_to_admin(pdf_path: Path) -> bool:
+                stem  = pdf_path.stem
+                title = admin_svc._resolve_title(stem)
+                # Il documento è dell'Admin se il suo titolo ChromaDB è nella lista
+                if title and title in titoli_admin:
+                    return True
+                # Oppure il PDF è ancora not_ingested o ready (non ancora nel DB)
+                # → è stato uploadato da questo Admin (tracciato nel job)
+                status = _doc_status(pdf_path.name, admin_svc)
+                if status in ("not_ingested", "ready", "processing"):
+                    # Controlla se questo admin ha un job recente per questo file
+                    for job in _jobs.values():
+                        if job.get("filename") == pdf_path.name and job.get("uploader_id") == admin.utente_id:
+                            return True
+                    # Se non c'è job, lo mostriamo solo al SuperAdmin
+                    return False
+                return False
+
+            pdf_files = [f for f in all_pdf_files if _pdf_belongs_to_admin(f)]
+        finally:
+            db.close()
+    else:
+        pdf_files = all_pdf_files
+
     filenames = [p.name for p in pdf_files]
     statuses  = _doc_status_batch(filenames, admin_svc)
     pdfs = [
@@ -208,7 +272,7 @@ async def upload_pdf(
     content = await file.read()
     dest.write_bytes(content)
     size_kb = round(len(content) / 1024, 1)
-    logger.info(f"Upload: {file.filename} ({size_kb} KB)")
+    logger.info(f"Upload: {file.filename} ({size_kb} KB) da admin {admin.utente_id}")
 
     _log(
         utente_id  = admin.utente_id,
@@ -306,7 +370,6 @@ def _run_ingestion_sync(
     except Exception as e:
         emit(f"❌ Errore pipeline: {e}")
         _jobs[job_id]["status"] = "error"
-
         _log(
             utente_id  = utente_id,
             azione     = "doc_ingestion",
@@ -335,7 +398,13 @@ async def ingest_pdf(
         raise HTTPException(status_code=409, detail="Ingestion già in corso.")
 
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"filename": filename, "status": "processing", "logs": []}
+    # Salva l'uploader_id nel job per il filtro ownership sui PDF non ancora in DB
+    _jobs[job_id] = {
+        "filename":    filename,
+        "status":      "processing",
+        "logs":        [],
+        "uploader_id": admin.utente_id,
+    }
     _ws_connections[job_id] = []
 
     loop = asyncio.get_event_loop()
@@ -383,7 +452,7 @@ async def progress_ws(websocket: WebSocket, job_id: str):
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: chunk explorer
+# ENDPOINT: chunk explorer (con ownership check)
 # ─────────────────────────────────────────────
 
 @router.get("/chunks/{filename}")
@@ -392,11 +461,25 @@ async def get_chunks(
     request: Request,
     page: int = 0,
     page_size: int = 15,
-    _=Depends(require_admin),
+    admin=Depends(require_admin),
 ):
+    from app.db.session import SessionLocal
     stem      = Path(filename).stem
     admin_svc = _admin_search(request)
-    result    = admin_svc.get_chunks(stem, page=page, page_size=page_size)
+    scope     = get_admin_scope(admin, SessionLocal())
+
+    # Ownership check: un Admin non-Super può vedere solo i suoi chunk
+    if scope["owner_filter"] is not None:
+        db = SessionLocal()
+        try:
+            titoli_miei = _get_titoli_owner(scope["owner_filter"], db)
+            titolo_doc  = admin_svc._resolve_title(stem)
+            if titolo_doc and titolo_doc not in titoli_miei:
+                raise HTTPException(status_code=403, detail="Accesso negato a questo documento.")
+        finally:
+            db.close()
+
+    result = admin_svc.get_chunks(stem, page=page, page_size=page_size)
     return {"filename": filename, **result}
 
 
@@ -433,7 +516,7 @@ async def get_livelli_riservatezza(_=Depends(require_admin)):
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: avvia loader
+# ENDPOINT: avvia loader (salva owner)
 # ─────────────────────────────────────────────
 
 @router.post("/load/{filename}")
@@ -466,7 +549,12 @@ async def load_document(
     json_path = str(json_candidates[0])
 
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"filename": filename, "status": "processing", "logs": []}
+    _jobs[job_id] = {
+        "filename":    filename,
+        "status":      "processing",
+        "logs":        [],
+        "uploader_id": admin.utente_id,
+    }
     _ws_connections[job_id] = []
 
     loop       = asyncio.get_event_loop()
@@ -493,6 +581,8 @@ async def load_document(
                     chroma_collection = collection,
                     emit              = emit,
                     forza_sovrascrivi = forza_sovrascrivi,
+                    # Passa l'owner per salvarlo su PostgreSQL
+                    id_utente_caricamento = utente_id,
                 )
                 emit(f"__LOAD_OK__{result['documento_id']}")
                 _jobs[job_id]["status"] = "done"
@@ -538,26 +628,36 @@ async def load_document(
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: sync status
+# ENDPOINT: sync status (filtrato per owner)
 # ─────────────────────────────────────────────
 
 @router.get("/sync-status")
-async def get_sync_status(request: Request, _=Depends(require_admin)):
+async def get_sync_status(request: Request, admin=Depends(require_admin)):
     from app.db.session import SessionLocal
     from app.services.sync_service import SyncService
 
     collection = _chroma_collection(request)
     sync_svc   = SyncService(collection)
     db = SessionLocal()
+    scope = get_admin_scope(admin, db)
     try:
-        stati = sync_svc.stato_tutti(db)
-        return {"documenti": stati}
+        tutti = sync_svc.stato_tutti(db)
+        # Filtra per owner se non SuperAdmin
+        if scope["owner_filter"] is not None:
+            from app.models.rag_models import Documento
+            titoli_miei = {
+                d.titolo for d in db.query(Documento).filter(
+                    Documento.id_utente_caricamento == scope["owner_filter"]
+                ).all()
+            }
+            tutti = [s for s in tutti if s["titolo"] in titoli_miei]
+        return {"documenti": tutti}
     finally:
         db.close()
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: elimina documento
+# ENDPOINT: elimina documento (ownership check)
 # ─────────────────────────────────────────────
 
 @router.delete("/document/{filename}")
@@ -568,29 +668,13 @@ async def delete_document_full(
 ):
     from app.db.session import SessionLocal
     from app.models.rag_models import Documento
-    from app.services.loader_service import _elimina_chroma_per_titolo, _log_sync
+    from app.services.loader_service import _elimina_chroma_per_titolo
+    from app.services.auth_service import require_doc_owner
 
     stem      = Path(filename).stem
     pdf_path  = PDF_DIR / filename
     removed   = []
     errors    = []
-
-    if pdf_path.exists():
-        pdf_path.unlink()
-        removed.append("pdf")
-
-    for f in [
-        OUTPUT_DIR / f"{stem}_raw.md",
-        OUTPUT_DIR / f"{stem}.md",
-        OUTPUT_DIR / f"{stem}_fixed.md",
-        OUTPUT_DIR / f"{stem}_chunks.json",
-        OUTPUT_DIR / f"{stem}_fixed_chunks.json",
-        CHUNKS_DIR / f"{stem}_chunks.json",
-        CHUNKS_DIR / f"{stem}_fixed_chunks.json",
-    ]:
-        if f.exists():
-            f.unlink()
-            removed.append(f.name)
 
     admin_svc     = _admin_search(request)
     collection    = _chroma_collection(request)
@@ -610,6 +694,9 @@ async def delete_document_full(
                 doc = db.query(Documento).filter(Documento.titolo.ilike(f"%{stem}%")).first()
 
         if doc:
+            # ── OWNERSHIP CHECK ──────────────────────────
+            require_doc_owner(doc.documento_id, admin, db)
+            # ─────────────────────────────────────────────
             documento_id = doc.documento_id
             titolo_doc   = doc.titolo
             db.delete(doc)
@@ -618,11 +705,32 @@ async def delete_document_full(
         else:
             titolo_doc = titolo_doc or stem
             errors.append("PostgreSQL: nessun record trovato")
+    except HTTPException:
+        db.close()
+        raise
     except Exception as e:
         errors.append(f"PostgreSQL: {e}")
         titolo_doc = titolo_doc or stem
     finally:
         db.close()
+
+    # Elimina file fisici solo dopo il check
+    if pdf_path.exists():
+        pdf_path.unlink()
+        removed.append("pdf")
+
+    for f in [
+        OUTPUT_DIR / f"{stem}_raw.md",
+        OUTPUT_DIR / f"{stem}.md",
+        OUTPUT_DIR / f"{stem}_fixed.md",
+        OUTPUT_DIR / f"{stem}_chunks.json",
+        OUTPUT_DIR / f"{stem}_fixed_chunks.json",
+        CHUNKS_DIR / f"{stem}_chunks.json",
+        CHUNKS_DIR / f"{stem}_fixed_chunks.json",
+    ]:
+        if f.exists():
+            f.unlink()
+            removed.append(f.name)
 
     try:
         n = _elimina_chroma_per_titolo(collection, titolo_doc) if titolo_doc else 0
@@ -649,13 +757,14 @@ async def delete_document_full(
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: metadati documento
+# ENDPOINT: metadati documento (ownership check)
 # ─────────────────────────────────────────────
 
 @router.get("/document/{filename}/metadata")
-async def get_document_metadata(filename: str, request: Request, _=Depends(require_admin)):
+async def get_document_metadata(filename: str, request: Request, admin=Depends(require_admin)):
     from app.db.session import SessionLocal
     from app.models.rag_models import Documento
+    from app.services.auth_service import require_doc_owner
 
     stem          = Path(filename).stem
     admin_svc     = _admin_search(request)
@@ -673,6 +782,11 @@ async def get_document_metadata(filename: str, request: Request, _=Depends(requi
                 doc = db.query(Documento).filter(Documento.titolo.ilike(f"%{stem}%")).first()
         if not doc:
             raise HTTPException(status_code=404, detail="Documento non trovato in PostgreSQL.")
+
+        # ── OWNERSHIP CHECK ──────────────────────────
+        require_doc_owner(doc.documento_id, admin, db)
+        # ─────────────────────────────────────────────
+
         return {
             "documento_id":  doc.documento_id,
             "titolo":        doc.titolo,
@@ -688,7 +802,7 @@ async def get_document_metadata(filename: str, request: Request, _=Depends(requi
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: aggiorna documento
+# ENDPOINT: aggiorna documento (ownership check)
 # ─────────────────────────────────────────────
 
 @router.put("/document/{filename}")
@@ -697,6 +811,9 @@ async def update_document(
     request: Request,
     admin=Depends(require_admin),
 ):
+    from app.services.auth_service import require_doc_owner
+    from app.db.session import SessionLocal
+
     body = await request.json()
 
     documento_id  = body.get("documento_id")
@@ -714,6 +831,14 @@ async def update_document(
         raise HTTPException(status_code=400, detail="versione è obbligatoria.")
     if not data_validita:
         raise HTTPException(status_code=400, detail="data_validita è obbligatoria.")
+
+    db = SessionLocal()
+    try:
+        # ── OWNERSHIP CHECK ──────────────────────────
+        require_doc_owner(documento_id, admin, db)
+        # ─────────────────────────────────────────────
+    finally:
+        db.close()
 
     collection = _chroma_collection(request)
 
@@ -754,7 +879,8 @@ async def update_document(
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: activity log
+# ENDPOINT: activity log (SuperAdmin vede tutto,
+#           Admin vede solo i suoi eventi)
 # ─────────────────────────────────────────────
 
 @router.get("/activity-log")
@@ -765,15 +891,21 @@ async def get_activity_log(
     azione: str = "",
     esito: str = "",
     utente: str = "",
-    _=Depends(require_admin),
+    admin=Depends(require_admin),
 ):
     from app.db.session import SessionLocal
     from sqlalchemy import text as _text2
 
+    scope = get_admin_scope(admin, SessionLocal())
     db = SessionLocal()
     try:
         conditions = []
         params: dict = {"limit": page_size, "offset": page * page_size}
+
+        # Admin non-Super vede solo i propri log
+        if scope["owner_filter"] is not None:
+            conditions.append("al.utente_id = :owner_uid")
+            params["owner_uid"] = scope["owner_filter"]
 
         if azione:
             conditions.append("al.azione = :azione")
@@ -781,7 +913,7 @@ async def get_activity_log(
         if esito:
             conditions.append("al.esito = :esito")
             params["esito"] = esito
-        if utente:
+        if utente and scope["owner_filter"] is None:  # solo SuperAdmin può filtrare per utente
             conditions.append(
                 "(LOWER(u.email) LIKE :utente "
                 "OR LOWER(u.nome) LIKE :utente "
@@ -826,7 +958,7 @@ async def get_activity_log(
                 "timestamp":      str(r.timestamp),
                 "azione":         r.azione,
                 "dettaglio":      dict(r.dettaglio) if r.dettaglio else {},
-                "ip_address":     (r.ip_address or "").split("/")[0],  # normalizza CIDR
+                "ip_address":     (r.ip_address or "").split("/")[0],
                 "esito":          r.esito,
                 "utente_id":      r.utente_id,
                 "utente_email":   r.utente_email,

@@ -10,7 +10,7 @@ import {
   useCallback, useEffect, useRef
 } from "react";
 
-const API = "http://127.0.0.1:8080";
+const API = "https://127.0.0.1:8080";
 
 const AuthContext = createContext(null);
 

@@ -8,7 +8,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.chat  import router as chat_router
 from app.api.v1.admin import router as admin_router
-from app.api.v1.auth  import router as auth_router          # ← NUOVO
+from app.api.v1.auth  import router as auth_router          
 
 from app.services.AI_Services import AIService
 from app.services.Search_Service_langchain2 import SearchService
@@ -31,10 +31,17 @@ for folder in ["static", "data"]:
 STATIC_DIR = os.getenv("STATIC_DIR", "static")
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+origins = [
+    "http://localhost:5173",
+    "https://localhost:5173",      # ← AGGIUNGI
+    "http://127.0.0.1:5173",
+    "https://127.0.0.1:5173",
+    "https://mprlv9br-5173.euw.devtunnels.ms",
+]
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

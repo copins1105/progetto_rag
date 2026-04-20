@@ -1,6 +1,11 @@
 # app/api/v1/auth.py
 """
-Router autenticazione — OAuth2 + JWT con permessi RBAC
+Router autenticazione — OAuth2 + JWT con permessi RBAC + Ownership
+
+OWNERSHIP UTENTI:
+  - SuperAdmin: vede e gestisce tutti gli utenti, può creare Admin e User.
+  - Admin: può creare solo User, vede e gestisce solo gli User che ha creato lui.
+  - User: nessun accesso a questa sezione.
 """
 
 import logging
@@ -22,6 +27,7 @@ from app.services.auth_service import (
     set_refresh_cookie, clear_refresh_cookie,
     get_refresh_token_from_cookie,
     get_current_user, require_admin, require_permission,
+    get_admin_scope, require_user_owner, is_superadmin,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,6 +58,8 @@ def _log(db, utente_id, azione: str, dettaglio: dict = None,
             db.rollback()
         except Exception:
             pass
+
+
 # ─────────────────────────────────────────────
 # SCHEMI PYDANTIC
 # ─────────────────────────────────────────────
@@ -118,6 +126,7 @@ def _user_dict(user, db: Session) -> dict:
         "cognome":        user.cognome,
         "data_creazione": str(user.data_creazione) if user.data_creazione else None,
         "ruoli":          nomi_ruoli,
+        "creato_da":      user.creato_da,
         "is_admin":       any(r in nomi_ruoli for r in ["Admin", "SuperAdmin"]),
         "is_superadmin":  "SuperAdmin" in nomi_ruoli,
         "role":           nomi_ruoli[0] if nomi_ruoli else "User",
@@ -296,32 +305,77 @@ def change_password(request: Request, response: Response,
 
 
 # ─────────────────────────────────────────────
-# GESTIONE UTENTI (Admin+)
+# GESTIONE UTENTI (Admin+) — con OWNERSHIP
 # ─────────────────────────────────────────────
 
 @router.get("/users")
-def list_users(admin=Depends(require_permission("user_view")),
-               db: Session=Depends(get_db)):
+def list_users(
+    admin=Depends(require_permission("user_view")),
+    db: Session=Depends(get_db),
+):
+    """
+    SuperAdmin → vede tutti gli utenti.
+    Admin → vede solo gli User che ha creato lui.
+    """
     from app.models.rag_models import Utente
-    users = db.query(Utente).order_by(Utente.data_creazione.desc()).all()
+    scope = get_admin_scope(admin, db)
+
+    if scope["owner_filter"] is not None:
+        # Admin: solo i suoi User (creato_da = admin.utente_id)
+        users = (
+            db.query(Utente)
+            .filter(Utente.creato_da == scope["owner_filter"])
+            .order_by(Utente.data_creazione.desc())
+            .all()
+        )
+    else:
+        # SuperAdmin: tutti
+        users = db.query(Utente).order_by(Utente.data_creazione.desc()).all()
+
     return {"users": [_user_dict(u, db) for u in users]}
 
 
 @router.post("/users", status_code=201)
-def create_user(request: Request, body: CreateUserRequest,
-                admin=Depends(require_permission("user_create")),
-                db: Session=Depends(get_db)):
+def create_user(
+    request: Request,
+    body: CreateUserRequest,
+    admin=Depends(require_permission("user_create")),
+    db: Session=Depends(get_db),
+):
+    """
+    SuperAdmin → può creare Admin e User.
+    Admin → può creare solo User (ruolo forzato a 'User').
+    Il nuovo utente viene registrato con creato_da = admin.utente_id.
+    """
     from app.models.rag_models import Utente, Ruolo, Utente_Ruolo
+
+    scope = get_admin_scope(admin, db)
+
+    # Admin non-Super può creare solo User
+    ruolo_richiesto = body.ruolo
+    if scope["owner_filter"] is not None:
+        if ruolo_richiesto in ["Admin", "SuperAdmin"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Un Admin può creare solo utenti con ruolo User."
+            )
+        ruolo_richiesto = "User"  # forza
 
     if db.query(Utente).filter(Utente.email == body.email).first():
         raise HTTPException(409, detail=f"Email '{body.email}' già registrata.")
 
-    ruolo = db.query(Ruolo).filter(Ruolo.nome_ruolo == body.ruolo).first()
+    ruolo = db.query(Ruolo).filter(Ruolo.nome_ruolo == ruolo_richiesto).first()
     if not ruolo:
-        raise HTTPException(400, detail=f"Ruolo '{body.ruolo}' non trovato.")
+        raise HTTPException(400, detail=f"Ruolo '{ruolo_richiesto}' non trovato.")
 
-    new_user = Utente(email=body.email, password_hash=hash_password(body.password),
-                      nome=body.nome, cognome=body.cognome)
+    new_user = Utente(
+        email         = body.email,
+        password_hash = hash_password(body.password),
+        nome          = body.nome,
+        cognome       = body.cognome,
+        # Traccia chi ha creato l'utente
+        creato_da     = admin.utente_id,
+    )
     db.add(new_user)
     db.flush()
     db.add(Utente_Ruolo(utente_id=new_user.utente_id, ruolo_id=ruolo.ruolo_id))
@@ -329,15 +383,28 @@ def create_user(request: Request, body: CreateUserRequest,
 
     ip = request.client.host if request.client else None
     _log(db, admin.utente_id, "user_created",
-         {"target_email": body.email, "ruolo": body.ruolo}, ip)
+         {"target_email": body.email, "ruolo": ruolo_richiesto, "creato_da": admin.utente_id}, ip)
+
     return {"status": "created", "user": _user_dict(new_user, db)}
 
 
 @router.put("/users/{utente_id}")
-def update_user(utente_id: int, request: Request, body: UpdateUserRequest,
-                admin=Depends(require_permission("user_update")),
-                db: Session=Depends(get_db)):
+def update_user(
+    utente_id: int,
+    request: Request,
+    body: UpdateUserRequest,
+    admin=Depends(require_permission("user_update")),
+    db: Session=Depends(get_db),
+):
+    """
+    SuperAdmin → può modificare chiunque e cambiare qualsiasi ruolo.
+    Admin → può modificare solo gli User creati da lui; non può cambiare il ruolo in Admin/SuperAdmin.
+    """
     from app.models.rag_models import Utente, Ruolo, Utente_Ruolo
+
+    # ── OWNERSHIP CHECK ──────────────────────────
+    require_user_owner(utente_id, admin, db)
+    # ─────────────────────────────────────────────
 
     user = db.query(Utente).filter(Utente.utente_id == utente_id).first()
     if not user:
@@ -347,6 +414,14 @@ def update_user(utente_id: int, request: Request, body: UpdateUserRequest,
     if body.cognome is not None: user.cognome = body.cognome
 
     if body.ruolo is not None:
+        # Admin non-Super non può promuovere a ruoli elevati
+        scope = get_admin_scope(admin, db)
+        if scope["owner_filter"] is not None and body.ruolo in ["Admin", "SuperAdmin"]:
+            raise HTTPException(
+                status_code=403,
+                detail="Non puoi assegnare ruoli Admin o SuperAdmin."
+            )
+
         ruolo = db.query(Ruolo).filter(Ruolo.nome_ruolo == body.ruolo).first()
         if not ruolo:
             raise HTTPException(400, detail=f"Ruolo '{body.ruolo}' non trovato.")
@@ -362,13 +437,24 @@ def update_user(utente_id: int, request: Request, body: UpdateUserRequest,
 
 
 @router.delete("/users/{utente_id}")
-def delete_user(utente_id: int, request: Request,
-                admin=Depends(require_permission("user_delete")),
-                db: Session=Depends(get_db)):
+def delete_user(
+    utente_id: int,
+    request: Request,
+    admin=Depends(require_permission("user_delete")),
+    db: Session=Depends(get_db),
+):
+    """
+    SuperAdmin → può eliminare chiunque (eccetto se stesso).
+    Admin → può eliminare solo gli User creati da lui.
+    """
     from app.models.rag_models import Utente
 
     if utente_id == admin.utente_id:
         raise HTTPException(400, detail="Non puoi eliminare il tuo account.")
+
+    # ── OWNERSHIP CHECK ──────────────────────────
+    require_user_owner(utente_id, admin, db)
+    # ─────────────────────────────────────────────
 
     user = db.query(Utente).filter(Utente.utente_id == utente_id).first()
     if not user:
@@ -385,7 +471,7 @@ def delete_user(utente_id: int, request: Request,
 
 
 # ─────────────────────────────────────────────
-# MATRICE PERMESSI — lettura
+# MATRICE PERMESSI — lettura (solo SuperAdmin)
 # ─────────────────────────────────────────────
 
 @router.get("/permissions")
@@ -396,8 +482,6 @@ def get_permission_matrix(
     tutti_permessi = db.execute(_text(
         "SELECT codice_permesso, descrizione FROM Permesso ORDER BY codice_permesso"
     )).fetchall()
-
-    codici = [p.codice_permesso for p in tutti_permessi]
 
     righe = db.execute(_text("""
         SELECT
@@ -445,7 +529,7 @@ def get_all_permission_codes(
 
 
 # ─────────────────────────────────────────────
-# MATRICE PERMESSI — scrittura override
+# MATRICE PERMESSI — scrittura override (solo SuperAdmin)
 # ─────────────────────────────────────────────
 
 @router.put("/permissions/{utente_id}")
@@ -549,7 +633,6 @@ def set_user_permissions_bulk(
         modificati += 1
 
     db.commit()
-
     revoke_all_refresh_tokens(db, utente_id)
 
     ip = request.client.host if request.client else None

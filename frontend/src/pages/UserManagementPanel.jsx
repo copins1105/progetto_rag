@@ -1,11 +1,15 @@
 // src/pages/UserManagementPanel.jsx
-// Da integrare come tab nel tuo AdminPanel esistente.
-// Mostra la lista utenti con possibilità di creare, modificare ed eliminare.
+//
+// Gestione utenti con ownership:
+//   SuperAdmin → vede e gestisce tutti gli utenti, può creare Admin e User.
+//   Admin      → vede e gestisce solo gli User creati da lui; può creare solo User.
 
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 
-const ROLE_OPTIONS = ["Admin", "User"];
+// Admin può assegnare solo "User"; SuperAdmin può assegnare qualsiasi ruolo
+const ROLE_OPTIONS_ADMIN      = ["User"];
+const ROLE_OPTIONS_SUPERADMIN = ["Admin", "User"];
 
 const s = {
   btn: (variant = "primary") => ({
@@ -64,7 +68,9 @@ const s = {
 // ─────────────────────────────────────────────
 // MODAL CREA UTENTE
 // ─────────────────────────────────────────────
-function CreateUserModal({ onClose, onCreated, authFetch }) {
+function CreateUserModal({ onClose, onCreated, authFetch, isSuperAdmin }) {
+  const roleOptions = isSuperAdmin ? ROLE_OPTIONS_SUPERADMIN : ROLE_OPTIONS_ADMIN;
+
   const [email,    setEmail]    = useState("");
   const [password, setPassword] = useState("");
   const [nome,     setNome]     = useState("");
@@ -100,6 +106,11 @@ function CreateUserModal({ onClose, onCreated, authFetch }) {
         <h3 style={{ fontSize: "0.95rem", fontWeight: 600, color: "var(--text)", marginBottom: 20 }}>
           Crea nuovo utente
         </h3>
+        {!isSuperAdmin && (
+          <div style={{ ...s.banner(true), marginBottom: 16, fontSize: "0.72rem" }}>
+            ℹ️ Come Admin puoi creare solo utenti con ruolo <strong>User</strong>.
+          </div>
+        )}
         <form onSubmit={handleCreate} noValidate>
           <label style={s.label}>Email *</label>
           <input style={s.input} type="email" value={email} onChange={e => setEmail(e.target.value)} required />
@@ -117,7 +128,7 @@ function CreateUserModal({ onClose, onCreated, authFetch }) {
           </div>
           <label style={s.label}>Ruolo *</label>
           <select style={s.select} value={ruolo} onChange={e => setRuolo(e.target.value)}>
-            {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
+            {roleOptions.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
 
           {error && <div style={s.banner(false)}>⚠ {error}</div>}
@@ -137,7 +148,9 @@ function CreateUserModal({ onClose, onCreated, authFetch }) {
 // ─────────────────────────────────────────────
 // RIGA UTENTE
 // ─────────────────────────────────────────────
-function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted }) {
+function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted, isSuperAdmin }) {
+  const roleOptions = isSuperAdmin ? ROLE_OPTIONS_SUPERADMIN : ROLE_OPTIONS_ADMIN;
+
   const [editing,  setEditing]  = useState(false);
   const [nome,     setNome]     = useState(u.nome     || "");
   const [cognome,  setCognome]  = useState(u.cognome  || "");
@@ -146,7 +159,9 @@ function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted }) {
   const [result,   setResult]   = useState(null);
   const [confirmDel, setConfirmDel] = useState(false);
 
-  const isSelf = currentUser?.utente_id === u.utente_id;
+  const isSelf    = currentUser?.utente_id === u.utente_id;
+  // Un Admin non può modificare/eliminare altri Admin o SuperAdmin
+  const isProtected = !isSuperAdmin && u.ruoli?.some(r => ["Admin", "SuperAdmin"].includes(r));
 
   const handleSave = async () => {
     setLoading(true); setResult(null);
@@ -169,7 +184,12 @@ function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted }) {
   const handleDelete = async () => {
     setLoading(true);
     try {
-      await authFetch(`/api/v1/auth/users/${u.utente_id}`, { method: "DELETE" });
+      const res = await authFetch(`/api/v1/auth/users/${u.utente_id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json();
+        setResult({ ok: false, msg: data.detail });
+        return;
+      }
       onDeleted(u.utente_id);
     } catch (err) {
       setResult({ ok: false, msg: err.message });
@@ -194,7 +214,7 @@ function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted }) {
                 onChange={e => setCognome(e.target.value)} placeholder="Cognome" />
             </div>
             <select style={{ ...s.select, marginBottom: 0 }} value={ruolo} onChange={e => setRuolo(e.target.value)}>
-              {ROLE_OPTIONS.map(r => <option key={r} value={r}>{r}</option>)}
+              {roleOptions.map(r => <option key={r} value={r}>{r}</option>)}
             </select>
             {result && <div style={{ ...s.banner(result.ok), marginTop: 6 }}>{result.msg}</div>}
           </>
@@ -219,9 +239,13 @@ function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted }) {
         )}
       </div>
 
-      {/* Azioni */}
+      {/* Azioni — disabilitate se l'utente è protetto da visione Admin */}
       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-        {editing ? (
+        {isProtected ? (
+          <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", padding: "4px 8px" }}>
+            —
+          </span>
+        ) : editing ? (
           <>
             <button style={{ ...s.btn("success"), padding: "6px 12px", opacity: loading ? 0.5 : 1 }}
               onClick={handleSave} disabled={loading}>✓</button>
@@ -247,6 +271,11 @@ function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted }) {
             )}
           </>
         )}
+        {result && !editing && (
+          <div style={{ ...s.banner(result.ok), fontSize: "0.7rem", padding: "4px 8px", marginBottom: 0 }}>
+            {result.msg}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -256,7 +285,11 @@ function UserRow({ u, currentUser, authFetch, onUpdated, onDeleted }) {
 // PANEL PRINCIPALE
 // ─────────────────────────────────────────────
 export default function UserManagementPanel() {
-  const { authFetch, user: currentUser } = useAuth();
+  const { authFetch, user: currentUser, hasPermission } = useAuth();
+
+  // Determina se l'utente corrente è SuperAdmin
+  const isSuperAdmin = currentUser?.is_superadmin ?? false;
+
   const [users,       setUsers]       = useState([]);
   const [loading,     setLoading]     = useState(false);
   const [showCreate,  setShowCreate]  = useState(false);
@@ -284,21 +317,41 @@ export default function UserManagementPanel() {
       {showCreate && (
         <CreateUserModal
           authFetch={authFetch}
+          isSuperAdmin={isSuperAdmin}
           onClose={() => setShowCreate(false)}
           onCreated={(u) => { setUsers(prev => [u, ...prev]); }}
         />
+      )}
+
+      {/* Info contestuale per Admin non-Super */}
+      {!isSuperAdmin && (
+        <div style={{
+          padding: "10px 14px", marginBottom: 16,
+          background: "rgba(79,142,247,0.07)",
+          border: "1px solid rgba(79,142,247,0.2)",
+          borderRadius: 8, fontSize: "0.75rem",
+          color: "var(--text-muted)", lineHeight: 1.6,
+        }}>
+          👤 Stai visualizzando solo gli utenti che hai creato tu.
+          Puoi creare, modificare ed eliminare solo utenti con ruolo <strong style={{ color: "var(--text)" }}>User</strong>.
+        </div>
       )}
 
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
         <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
           {users.length} utent{users.length !== 1 ? "i" : "e"}
+          {!isSuperAdmin ? " (tuoi)" : ""}
         </span>
         <div style={{ display: "flex", gap: 8 }}>
           <button style={{ ...s.btn("ghost"), fontSize: "0.75rem", padding: "6px 12px" }}
             onClick={fetchUsers}>↻ Aggiorna</button>
-          <button style={{ ...s.btn("primary"), fontSize: "0.75rem", padding: "6px 14px" }}
-            onClick={() => setShowCreate(true)}>＋ Nuovo utente</button>
+          {hasPermission("user_create") && (
+            <button style={{ ...s.btn("primary"), fontSize: "0.75rem", padding: "6px 14px" }}
+              onClick={() => setShowCreate(true)}>
+              ＋ Nuovo {isSuperAdmin ? "utente" : "User"}
+            </button>
+          )}
         </div>
       </div>
 
@@ -309,7 +362,7 @@ export default function UserManagementPanel() {
         </div>
       ) : users.length === 0 ? (
         <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", padding: 24 }}>
-          Nessun utente trovato.
+          {isSuperAdmin ? "Nessun utente trovato." : "Non hai ancora creato nessun utente."}
         </div>
       ) : (
         users.map(u => (
@@ -318,6 +371,7 @@ export default function UserManagementPanel() {
             u={u}
             currentUser={currentUser}
             authFetch={authFetch}
+            isSuperAdmin={isSuperAdmin}
             onUpdated={handleUpdated}
             onDeleted={handleDeleted}
           />

@@ -1,10 +1,6 @@
 // src/context/ChatContext.jsx
-//
-// Context globale per la chat.
-// Salva messaggi e sessionId in memoria — sopravvivono alla navigazione
-// chat ↔ admin finché l'utente non ricarica la pagina.
-
-import { createContext, useContext, useState } from "react";
+import { createContext, useContext, useState, useEffect } from "react";
+import { useAuth } from "./AuthContext";
 
 const ChatContext = createContext(null);
 
@@ -17,12 +13,23 @@ const generateSessionId = () =>
   `session_${Math.random().toString(36).substr(2, 9)}`;
 
 export function ChatProvider({ children }) {
-  const [messages, setMessages] = useState([INITIAL_MESSAGE]);
-  const [sessionId]             = useState(generateSessionId);
+  const { user } = useAuth();
+
+  const [messages,  setMessages]  = useState([INITIAL_MESSAGE]);
+  const [sessionId, setSessionId] = useState(generateSessionId);
+
+  // Ogni volta che cambia l'utente (login/logout/switch),
+  // resetta messaggi e genera un nuovo sessionId
+  useEffect(() => {
+    setMessages([INITIAL_MESSAGE]);
+    setSessionId(generateSessionId());
+  }, [user?.utente_id]); // dipendenza sull'ID utente, non sull'oggetto intero
 
   const addMessage = (msg) => setMessages(prev => [...prev, msg]);
-
-  const resetChat = () => setMessages([INITIAL_MESSAGE]);
+  const resetChat  = () => {
+    setMessages([INITIAL_MESSAGE]);
+    setSessionId(generateSessionId());
+  };
 
   return (
     <ChatContext.Provider value={{ messages, sessionId, addMessage, resetChat }}>

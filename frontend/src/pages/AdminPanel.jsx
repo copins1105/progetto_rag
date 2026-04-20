@@ -11,7 +11,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-const API = "http://127.0.0.1:8080";
+const API = "https://127.0.0.1:8080";
 
 // ─────────────────────────────────────────────
 // STILI (identici all'originale)

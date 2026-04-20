@@ -39,12 +39,15 @@ class Documento(Base):
     data_validita_inizio = Column(Date,        nullable=False)
     data_scadenza        = Column(Date)
     is_archiviato        = Column(Boolean,     default=False)
+    # Chi ha caricato il documento (Admin owner)
+    id_utente_caricamento = Column(Integer, ForeignKey("utente.utente_id"), nullable=True)
     data_caricamento     = Column(DateTime,    server_default=text('CURRENT_TIMESTAMP'))
     sync_status          = Column(String(20),  default='synced')
 
     tipo      = relationship("TipoDocumento",       foreign_keys=[id_tipo])
     livello   = relationship("LivelloRiservatezza",  foreign_keys=[id_livello])
     sync_logs = relationship("SyncLog", back_populates="documento", cascade="all, delete-orphan")
+    caricato_da = relationship("Utente", foreign_keys=[id_utente_caricamento])
 
 
 class SyncLog(Base):
@@ -73,9 +76,26 @@ class Utente(Base):
     nome           = Column(String(100))
     cognome        = Column(String(100))
     data_creazione = Column(DateTime, server_default=text('CURRENT_TIMESTAMP'))
+    # Admin che ha creato questo utente (NULL = sistema/SuperAdmin)
+    creato_da      = Column(Integer, ForeignKey("utente.utente_id", ondelete="SET NULL"), nullable=True)
 
     utente_ruoli    = relationship("Utente_Ruolo",  back_populates="utente", cascade="all, delete-orphan")
     refresh_tokens  = relationship("RefreshToken",  back_populates="utente", cascade="all, delete-orphan")
+    # Utenti creati da questo Admin
+    # DOPO (corretto)
+    utenti_creati   = relationship(
+        "Utente",
+        foreign_keys=[creato_da],
+        back_populates="creatore",
+        lazy="dynamic",
+    )
+    creatore = relationship(
+        "Utente",
+        foreign_keys=[creato_da],
+        back_populates="utenti_creati",
+        remote_side="Utente.utente_id",
+        uselist=False,
+    )
 
 
 class Ruolo(Base):
@@ -131,8 +151,33 @@ class RefreshToken(Base):
     token_hash = Column(String(64), unique=True, nullable=False)
     scadenza   = Column(DateTime(timezone=True), nullable=False)
     revocato   = Column(Boolean, nullable=False, default=False)
-    ip_address = Column(String(45))   # IPv4 max 15, IPv6 max 39, con prefisso max 45
+    ip_address = Column(String(45))
     user_agent = Column(Text)
     created_at = Column(DateTime(timezone=True), server_default=text('NOW()'))
 
     utente = relationship("Utente", back_populates="refresh_tokens")
+
+
+# ─────────────────────────────────────────────
+# RBAC — Override permessi individuali
+# ─────────────────────────────────────────────
+
+class UtentePermesso(Base):
+    """Override individuali sui permessi (migration 06)."""
+    __tablename__ = "utente_permesso"
+
+    utente_id     = Column(Integer,
+                           ForeignKey("utente.utente_id", ondelete="CASCADE"),
+                           primary_key=True)
+    permesso_id   = Column(Integer,
+                           ForeignKey("permesso.permesso_id", ondelete="CASCADE"),
+                           primary_key=True)
+    concesso      = Column(Boolean, nullable=False, default=True)
+    aggiornato_da = Column(Integer,
+                           ForeignKey("utente.utente_id", ondelete="SET NULL"),
+                           nullable=True)
+    aggiornato_il = Column(DateTime(timezone=True), server_default=text('NOW()'))
+
+    utente        = relationship("Utente", foreign_keys=[utente_id])
+    permesso      = relationship("Permesso")
+    modificato_da = relationship("Utente", foreign_keys=[aggiornato_da])

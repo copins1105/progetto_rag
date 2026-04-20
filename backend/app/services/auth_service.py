@@ -1,23 +1,23 @@
 # app/services/auth_service.py
 """
-AuthService — OAuth2 + JWT + Refresh Token + RBAC
-==================================================
+AuthService — OAuth2 + JWT + Refresh Token + RBAC + Ownership
+==============================================================
 
-PERMESSI:
-  La funzione resolve_permissions(utente_id, db) calcola
-  i permessi effettivi di un utente applicando:
-    1. Permessi ereditati dal ruolo
-    2. Override individuali (Utente_Permesso)
-  Il risultato è una lista di codici_permesso (solo quelli TRUE).
+OWNERSHIP:
+  - SuperAdmin: vede e gestisce tutto.
+  - Admin: vede/gestisce solo i documenti che ha caricato lui
+           e solo gli utenti che ha creato lui (ruolo User).
+  - User: nessun accesso al pannello admin.
 
-  I permessi vengono inseriti nel JWT al login/refresh.
-  Vita JWT = 15 minuti → i permessi scadono automaticamente.
-  Se vuoi effetto immediato: revoca il refresh token dell'utente.
+HELPERS NUOVI:
+  get_current_admin_scope(token, db) → restituisce (utente, is_superadmin)
+    usato negli endpoint per applicare il filtro ownership.
 
-DEPENDENCY require_permission("codice"):
-  Sostituisce require_admin() sugli endpoint.
-  Verifica che il permesso sia nel JWT dell'utente.
-  Se non presente → 403 Forbidden.
+  require_doc_owner(documento_id, admin, db) → raise 403 se l'Admin
+    non è il proprietario del documento (ignorato per SuperAdmin).
+
+  require_user_owner(target_utente_id, admin, db) → raise 403 se l'Admin
+    non ha creato quell'utente (ignorato per SuperAdmin).
 """
 
 import os
@@ -67,22 +67,35 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 
 # ─────────────────────────────────────────────
+# HELPER RUOLI
+# ─────────────────────────────────────────────
+
+def get_ruoli(utente_id: int, db: Session) -> List[str]:
+    """Restituisce la lista dei ruoli di un utente."""
+    from app.models.rag_models import Utente_Ruolo, Ruolo
+    rows = (
+        db.query(Ruolo.nome_ruolo)
+        .join(Utente_Ruolo, Utente_Ruolo.ruolo_id == Ruolo.ruolo_id)
+        .filter(Utente_Ruolo.utente_id == utente_id)
+        .all()
+    )
+    return [r.nome_ruolo for r in rows]
+
+
+def is_superadmin(utente_id: int, db: Session) -> bool:
+    return "SuperAdmin" in get_ruoli(utente_id, db)
+
+
+def is_admin_or_super(utente_id: int, db: Session) -> bool:
+    ruoli = get_ruoli(utente_id, db)
+    return any(r in ruoli for r in ["Admin", "SuperAdmin"])
+
+
+# ─────────────────────────────────────────────
 # RISOLUZIONE PERMESSI
 # ─────────────────────────────────────────────
 
 def resolve_permissions(utente_id: int, db: Session) -> List[str]:
-    """
-    Calcola i permessi effettivi di un utente.
-
-    Logica (in ordine di priorità):
-      1. Override individuale (Utente_Permesso):
-         - concesso=TRUE  → permesso garantito
-         - concesso=FALSE → permesso negato anche se il ruolo ce l'ha
-      2. Permesso da ruolo (Ruolo_Permesso) → TRUE se presente
-      3. Default → FALSE (non incluso nella lista)
-
-    Ritorna una lista di codici_permesso (solo quelli effettivamente TRUE).
-    """
     try:
         rows = db.execute(text("""
             WITH permessi_ruolo AS (
@@ -99,10 +112,8 @@ def resolve_permissions(utente_id: int, db: Session) -> List[str]:
                 WHERE up.utente_id = :uid
             ),
             effettivi AS (
-                -- Override ha priorità assoluta
                 SELECT codice_permesso, concesso FROM override
                 UNION ALL
-                -- Ruolo solo se non c'è override
                 SELECT pr.codice_permesso, pr.concesso
                 FROM permessi_ruolo pr
                 WHERE NOT EXISTS (
@@ -121,7 +132,6 @@ def resolve_permissions(utente_id: int, db: Session) -> List[str]:
 
 
 def user_has_permission(utente_id: int, codice: str, db: Session) -> bool:
-    """Controllo rapido per un singolo permesso (senza caricare tutti)."""
     try:
         row = db.execute(text("""
             WITH override AS (
@@ -157,10 +167,6 @@ def user_has_permission(utente_id: int, codice: str, db: Session) -> bool:
 # ─────────────────────────────────────────────
 
 def create_access_token(data: dict) -> str:
-    """
-    Crea JWT firmato HS256, vita 15 minuti.
-    Il campo 'permissions' trasporta la lista dei permessi effettivi.
-    """
     now     = datetime.now(timezone.utc)
     payload = {
         **data,
@@ -268,7 +274,7 @@ def set_refresh_cookie(response, token: str) -> None:
         key      = REFRESH_COOKIE_NAME,
         value    = token,
         httponly = True,
-        secure   = is_prod,
+        secure   = True,
         samesite = "strict",
         path     = REFRESH_COOKIE_PATH,
         max_age  = REFRESH_TOKEN_DAYS * 24 * 60 * 60,
@@ -313,10 +319,6 @@ def get_current_user_with_permissions(
     token: str  = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
-    """
-    Come get_current_user ma restituisce anche i permessi dal JWT.
-    Usato quando serve accesso veloce ai permessi senza query DB.
-    """
     from app.models.rag_models import Utente
     payload = decode_access_token(token)
     email   = payload.get("sub")
@@ -324,31 +326,18 @@ def get_current_user_with_permissions(
     if not user:
         raise HTTPException(status_code=401, detail="Utente non trovato.",
                             headers={"WWW-Authenticate": "Bearer"})
-    # Permessi dal JWT (lista di codici)
     user._permissions = payload.get("permissions", [])
     return user
 
 
 def require_permission(codice: str):
-    """
-    Dependency factory: verifica che l'utente abbia un permesso specifico.
-
-    Uso:
-        @router.get("/admin/something")
-        async def endpoint(_=Depends(require_permission("doc_upload"))):
-            ...
-
-    Legge i permessi dal JWT (nessuna query DB).
-    Se il permesso non è nel token → 403 Forbidden.
-    """
+    """Verifica che l'utente abbia un permesso specifico (dal JWT)."""
     def _check(
         token: str  = Depends(oauth2_scheme),
         db: Session = Depends(get_db),
     ):
         from app.models.rag_models import Utente
         payload = decode_access_token(token)
-
-        # Permessi dal JWT
         permissions: list = payload.get("permissions", [])
 
         if codice not in permissions:
@@ -357,7 +346,6 @@ def require_permission(codice: str):
                 detail=f"Permesso '{codice}' non disponibile.",
             )
 
-        # Restituisce l'utente per endpoint che ne hanno bisogno
         email = payload.get("sub")
         user  = db.query(Utente).filter(Utente.email == email).first()
         if not user:
@@ -371,10 +359,7 @@ def require_admin(
     current_user = Depends(get_current_user),
     db: Session  = Depends(get_db),
 ):
-    """
-    Retrocompatibilità: verifica ruolo Admin o SuperAdmin.
-    Per i nuovi endpoint usare require_permission() invece.
-    """
+    """Verifica ruolo Admin o SuperAdmin."""
     from app.models.rag_models import Utente_Ruolo, Ruolo
     ruolo = (
         db.query(Ruolo.nome_ruolo)
@@ -407,3 +392,77 @@ def require_superadmin(
     if not is_super:
         raise HTTPException(status_code=403, detail="Accesso negato: richiesto ruolo SuperAdmin.")
     return current_user
+
+
+# ─────────────────────────────────────────────
+# OWNERSHIP HELPERS — NUOVI
+# ─────────────────────────────────────────────
+
+def get_admin_scope(utente: "Utente", db: Session) -> dict:
+    """
+    Restituisce un dict con le informazioni di scope dell'Admin:
+      {
+        "is_superadmin": bool,
+        "utente_id": int,
+        # Se SuperAdmin → owner_filter=None (nessun filtro)
+        # Se Admin → owner_filter=utente_id (filtra per proprietario)
+        "owner_filter": int | None,
+      }
+
+    Usato negli endpoint per applicare il filtro ownership in modo uniforme.
+    """
+    _is_super = is_superadmin(utente.utente_id, db)
+    return {
+        "is_superadmin": _is_super,
+        "utente_id":     utente.utente_id,
+        "owner_filter":  None if _is_super else utente.utente_id,
+    }
+
+
+def require_doc_owner(documento_id: int, admin, db: Session) -> None:
+    """
+    Raise HTTP 403 se l'Admin non è il proprietario del documento.
+    SuperAdmin: bypass totale.
+    """
+    if is_superadmin(admin.utente_id, db):
+        return  # SuperAdmin può tutto
+
+    from app.models.rag_models import Documento
+    doc = db.query(Documento).filter(Documento.documento_id == documento_id).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Documento non trovato.")
+    if doc.id_utente_caricamento != admin.utente_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Non hai i permessi per modificare questo documento."
+        )
+
+
+def require_user_owner(target_utente_id: int, admin, db: Session) -> None:
+    """
+    Raise HTTP 403 se l'Admin non ha creato quell'utente.
+    SuperAdmin: bypass totale.
+    Protezione extra: non si può operare su altri Admin o SuperAdmin.
+    """
+    if is_superadmin(admin.utente_id, db):
+        return  # SuperAdmin può tutto
+
+    from app.models.rag_models import Utente
+    target = db.query(Utente).filter(Utente.utente_id == target_utente_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="Utente non trovato.")
+
+    # Un Admin non può operare su altri Admin o SuperAdmin
+    target_ruoli = get_ruoli(target_utente_id, db)
+    if any(r in target_ruoli for r in ["Admin", "SuperAdmin"]):
+        raise HTTPException(
+            status_code=403,
+            detail="Non puoi modificare utenti con ruolo Admin o SuperAdmin."
+        )
+
+    # L'utente deve essere stato creato da questo Admin
+    if target.creato_da != admin.utente_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Non hai i permessi per modificare questo utente."
+        )

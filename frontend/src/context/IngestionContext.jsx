@@ -12,7 +12,7 @@ import {
 } from "react";
 import { useAuth } from "./AuthContext";
 
-const WS = "ws://127.0.0.1:8080";
+const WS = "wss://127.0.0.1:8080";
 
 const IngestionContext = createContext(null);
 
