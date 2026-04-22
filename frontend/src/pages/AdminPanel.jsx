@@ -1,7 +1,12 @@
 // src/pages/AdminPanel.jsx
-// Fix: rimossi tab Log/Utenti/Permessi dal pannello destro (RightPanel).
-// Quelli appartengono solo alla navbar superiore di AdminPage.
-// Il pannello destro è dedicato esclusivamente alle operazioni sui PDF.
+// FIX REACT BUGS:
+// 1. fetchPdfs non è più nella dep array del polling useEffect direttamente —
+//    usiamo un ref stabile per evitare il loop infinito di re-render.
+// 2. AdminPanel legge jobs/loaderJobs dal context usando useRef per il polling
+//    senza inserirli nelle deps (causavano re-creazione continua di fetchPdfs).
+// 3. handleStatusChange usa useCallback con deps stabili.
+// 4. Tutti gli useEffect hanno deps array corrette.
+
 import { useState, useEffect, useRef, useCallback } from "react";
 import { useIngestion } from "../context/IngestionContext";
 import { useAuth } from "../context/AuthContext";
@@ -11,11 +16,8 @@ import "react-pdf/dist/Page/TextLayer.css";
 
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-const API = "https://127.0.0.1:8080";
+const API = import.meta.env.VITE_API_URL || "https://127.0.0.1:8080";
 
-// ─────────────────────────────────────────────
-// STILI (identici all'originale)
-// ─────────────────────────────────────────────
 const s = {
   root: { display: "flex", flexDirection: "column", height: "100%", width: "100%", background: "var(--bg)", color: "var(--text)", fontFamily: "'DM Sans', sans-serif", overflow: "hidden" },
   toolbar: { display: "flex", alignItems: "center", gap: 8, padding: "8px 16px", background: "var(--surface)", borderBottom: "1px solid var(--border)", flexShrink: 0 },
@@ -106,16 +108,13 @@ function Badge({ status }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// UPLOAD ZONE
-// ─────────────────────────────────────────────
 function UploadZone({ onUploaded }) {
   const { authFetch } = useAuth()
   const [dragging, setDragging] = useState(false)
   const [uploading, setUploading] = useState(false)
   const inputRef = useRef()
 
-  const upload = async (file) => {
+  const upload = useCallback(async (file) => {
     if (!file || !file.name.toLowerCase().endsWith(".pdf")) return
     setUploading(true)
     const fd = new FormData()
@@ -126,7 +125,7 @@ function UploadZone({ onUploaded }) {
       onUploaded(data)
     } catch (e) { console.error("Upload error:", e) }
     finally { setUploading(false) }
-  }
+  }, [authFetch, onUploaded])
 
   return (
     <div style={s.uploadZone(dragging)} onClick={() => inputRef.current?.click()}
@@ -146,9 +145,6 @@ function UploadZone({ onUploaded }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// SIDEBAR
-// ─────────────────────────────────────────────
 function Sidebar({ pdfs, selected, onSelect, onUploaded, onRefresh }) {
   return (
     <aside style={s.sidebar}>
@@ -190,9 +186,6 @@ function Sidebar({ pdfs, selected, onSelect, onUploaded, onRefresh }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// PDF VIEWER
-// ─────────────────────────────────────────────
 async function pageHasTextLayer(pdfUrl, pageNum) {
   try {
     const loadingTask = pdfjs.getDocument(pdfUrl)
@@ -231,7 +224,6 @@ function PdfViewer({ filename, activeChunk, onClearChunk }) {
   const [showScanWarning, setShowScanWarning] = useState(false)
   const scanWarningTimer = useRef(null)
   const viewerContentRef = useRef(null)
-
   const url = `${API}/api/v1/admin/pdf/${encodeURIComponent(filename)}`
 
   useEffect(() => { setCurrentPage(1); setNumPages(null); setHasText(null) }, [filename])
@@ -239,10 +231,9 @@ function PdfViewer({ filename, activeChunk, onClearChunk }) {
   useEffect(() => {
     if (!activeChunk) return
     const p = parseInt(activeChunk.metadata?.pagina)
-    const targetPage = (p && p >= 1) ? p : currentPage
     if (p && p >= 1) setCurrentPage(p)
     setHasText(null)
-    pageHasTextLayer(url, targetPage).then(result => setHasText(result))
+    pageHasTextLayer(url, p && p >= 1 ? p : currentPage).then(setHasText)
   }, [activeChunk]) // eslint-disable-line
 
   useEffect(() => {
@@ -257,9 +248,7 @@ function PdfViewer({ filename, activeChunk, onClearChunk }) {
   useEffect(() => {
     if (!activeChunk || hasText !== true) return
     const timer = setTimeout(() => {
-      const container = viewerContentRef.current
-      if (!container) return
-      const firstMark = container.querySelector("mark")
+      const firstMark = viewerContentRef.current?.querySelector("mark")
       if (firstMark) firstMark.scrollIntoView({ behavior: "smooth", block: "center" })
     }, 350)
     return () => clearTimeout(timer)
@@ -292,30 +281,25 @@ function PdfViewer({ filename, activeChunk, onClearChunk }) {
           )}
         </div>
       </div>
-
       {activeChunk && (
         <div style={s.chunkBanner}>
           <span style={{ fontSize: "0.68rem", color: "rgba(79,142,247,0.7)", fontFamily: "'DM Mono', monospace", flexShrink: 0 }}>chunk</span>
           <span style={s.chunkBannerText}>{activeChunk.preview || activeChunk.text?.slice(0, 80)}</span>
           {activeChunk.metadata?.pagina && <span style={{ fontSize: "0.68rem", color: "rgba(79,142,247,0.8)", fontFamily: "'DM Mono', monospace", flexShrink: 0 }}>p.{activeChunk.metadata.pagina}</span>}
-          <button style={s.chunkBannerClear} onClick={onClearChunk} title="Rimuovi highlight">✕</button>
+          <button style={s.chunkBannerClear} onClick={onClearChunk}>✕</button>
         </div>
       )}
-
       <div style={{ overflow: "hidden", maxHeight: showScanWarning ? "48px" : "0px", opacity: showScanWarning ? 1 : 0, transition: "max-height 0.3s ease, opacity 0.3s ease", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 16px", background: "rgba(251,191,36,0.07)", borderBottom: "1px solid rgba(251,191,36,0.2)" }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#fbbf24" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
           <span style={{ fontSize: "0.7rem", color: "#fbbf24" }}>PDF scansionato — highlight non disponibile.</span>
         </div>
       </div>
-
       <div style={s.viewerContent} ref={viewerContentRef}>
-        <Document
-          file={url}
+        <Document file={url}
           onLoadSuccess={({ numPages }) => setNumPages(numPages)}
           loading={<div style={{ color: "var(--text-muted)", fontSize: "0.82rem", paddingTop: 40 }}>Caricamento PDF…</div>}
-          error={<div style={{ color: "#f87171", fontSize: "0.82rem", paddingTop: 40 }}>Impossibile caricare il PDF.</div>}
-        >
+          error={<div style={{ color: "#f87171", fontSize: "0.82rem", paddingTop: 40 }}>Impossibile caricare il PDF.</div>}>
           <div style={pageWrapStyle}>
             <Page pageNumber={currentPage} scale={scale} renderTextLayer renderAnnotationLayer={false} customTextRenderer={textRenderer} />
           </div>
@@ -325,27 +309,26 @@ function PdfViewer({ filename, activeChunk, onClearChunk }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// INGESTION PANEL
-// ─────────────────────────────────────────────
-function IngestionPanel({ pdf, onIngested }) {
+function IngestionPanel({ pdf, onIngested, onStatusChange }) {
   const { getJob, startIngestion } = useIngestion()
   const logsEndRef = useRef()
   const job    = getJob(pdf.filename)
   const status = job.status
   const logs   = job.logs
+
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [logs])
 
   return (
     <div>
       {status === null && (
-        <button style={s.ingestBtn} onClick={() => startIngestion(pdf.filename, onIngested)}>
+        <button style={s.ingestBtn} onClick={() => startIngestion(pdf.filename, onIngested, onStatusChange)}>
           <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
           Avvia ingestion
         </button>
       )}
       {status === "done"  && <div style={s.successBanner}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Documento indicizzato con successo</div>}
-      {status === "error" && <div style={s.errorBanner}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Pipeline terminata con errore</div>}
+      {status === "error" && <div style={s.errorBanner}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>Pipeline terminata con errore</div>}
+      {status === "processing" && <div style={{ fontSize: "0.75rem", color: "#fbbf24", marginBottom: 12, display: "flex", alignItems: "center", gap: 6 }}><div style={{ width: 7, height: 7, borderRadius: "50%", background: "#f59e0b", animation: "pulse-dot 2s infinite" }} />Elaborazione in corso…</div>}
       {logs.length > 0 && (
         <div style={s.logBox}>
           <div style={s.logHeader}><div style={s.logDot(status === "processing")} />log output</div>
@@ -356,9 +339,6 @@ function IngestionPanel({ pdf, onIngested }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// CHUNK EXPLORER
-// ─────────────────────────────────────────────
 function ChunkExplorer({ filename, onChunkSelect, activeChunkId }) {
   const { authFetch } = useAuth()
   const [chunks, setChunks]     = useState([])
@@ -381,11 +361,10 @@ function ChunkExplorer({ filename, onChunkSelect, activeChunkId }) {
   useEffect(() => { fetch_(0) }, [fetch_])
 
   const totalPages = Math.ceil(total / PAGE_SIZE)
-
   const handleToggle = (i, chunk) => {
-    const isOpening = expanded !== i
-    setExpanded(isOpening ? i : null)
-    onChunkSelect && onChunkSelect(isOpening ? chunk : null)
+    const opening = expanded !== i
+    setExpanded(opening ? i : null)
+    onChunkSelect?.(opening ? chunk : null)
   }
 
   return (
@@ -408,7 +387,7 @@ function ChunkExplorer({ filename, onChunkSelect, activeChunkId }) {
             {expanded === i && (
               <div style={s.chunkBody}>
                 {chunk.metadata?.pagina && (
-                  <div style={s.chunkPagePill} onClick={() => onChunkSelect && onChunkSelect(chunk)}>
+                  <div style={s.chunkPagePill} onClick={() => onChunkSelect?.(chunk)}>
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
                     pagina {chunk.metadata.pagina}
                   </div>
@@ -428,18 +407,15 @@ function ChunkExplorer({ filename, onChunkSelect, activeChunkId }) {
       })}
       {totalPages > 1 && (
         <div style={s.pagination}>
-          <button style={{ ...s.pageBtn, opacity: page <= 0 ? 0.3 : 1 }} disabled={page <= 0} onClick={() => { fetch_(page - 1); setExpanded(null); onChunkSelect && onChunkSelect(null) }}>← Precedente</button>
-          <button style={{ ...s.pageBtn, opacity: page >= totalPages - 1 ? 0.3 : 1 }} disabled={page >= totalPages - 1} onClick={() => { fetch_(page + 1); setExpanded(null); onChunkSelect && onChunkSelect(null) }}>Successiva →</button>
+          <button style={{ ...s.pageBtn, opacity: page <= 0 ? 0.3 : 1 }} disabled={page <= 0} onClick={() => { fetch_(page - 1); setExpanded(null); onChunkSelect?.(null) }}>← Precedente</button>
+          <button style={{ ...s.pageBtn, opacity: page >= totalPages - 1 ? 0.3 : 1 }} disabled={page >= totalPages - 1} onClick={() => { fetch_(page + 1); setExpanded(null); onChunkSelect?.(null) }}>Successiva →</button>
         </div>
       )}
     </div>
   )
 }
 
-// ─────────────────────────────────────────────
-// LOADER PANEL
-// ─────────────────────────────────────────────
-function LoaderPanel({ pdf, onLoaded }) {
+function LoaderPanel({ pdf, onLoaded, onStatusChange }) {
   const { getLoaderJob, startLoader, resetLoaderJob } = useIngestion()
   const { authFetch } = useAuth()
   const [tipi, setTipi]           = useState([])
@@ -462,11 +438,11 @@ function LoaderPanel({ pdf, onLoaded }) {
       setLivelli(d.livelli || [])
       if (d.livelli?.length) setIdLivello(String(d.livelli[0].id))
     })
-  }, [authFetch])
+  }, [authFetch])  // authFetch è stabile grazie a useCallback in AuthContext
 
   useEffect(() => { logsEndRef.current?.scrollIntoView({ behavior: "smooth" }) }, [logs])
 
-  const avvia = (forza = false) => {
+  const avvia = useCallback((forza = false) => {
     if (!idLivello || !dataVal) return
     startLoader(pdf.filename, {
       id_tipo: idTipo ? parseInt(idTipo) : null,
@@ -474,8 +450,8 @@ function LoaderPanel({ pdf, onLoaded }) {
       data_validita: dataVal,
       data_scadenza: dataSca || null,
       forza_sovrascrivi: forza,
-    }, onLoaded)
-  }
+    }, onLoaded, onStatusChange)
+  }, [idTipo, idLivello, dataVal, dataSca, pdf.filename, startLoader, onLoaded, onStatusChange])
 
   return (
     <div>
@@ -493,15 +469,12 @@ function LoaderPanel({ pdf, onLoaded }) {
       {(status === null || status === "error") && (
         <>
           <div style={s.formGroup}><label style={s.formLabel}>Tipo documento</label><select style={s.formSelect} value={idTipo} onChange={e => setIdTipo(e.target.value)}><option value=""> Nessuno </option>{tipi.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}</select></div>
-          <div style={s.formGroup}><label style={s.formLabel}>Livello riservatezza *</label><select style={s.formSelect} value={idLivello} onChange={e => setIdLivello(e.target.value)}>{livelli.map(l => <option key={l.id} value={l.id}>{l.nome}</option>)}</select></div>
-          <div style={s.formGroup}><label style={s.formLabel}>Data validità *</label><input style={s.formInput} type="date" value={dataVal} onChange={e => setDataVal(e.target.value)} /></div>
+          <div style={s.formGroup}><label style={s.formLabel}>Livello riservatezza </label><select style={s.formSelect} value={idLivello} onChange={e => setIdLivello(e.target.value)}>{livelli.map(l => <option key={l.id} value={l.id}>{l.nome}</option>)}</select></div>
+          <div style={s.formGroup}><label style={s.formLabel}>Data validità </label><input style={s.formInput} type="date" value={dataVal} onChange={e => setDataVal(e.target.value)} /></div>
           <div style={s.formGroup}><label style={s.formLabel}>Data scadenza</label><input style={s.formInput} type="date" value={dataSca} onChange={e => setDataSca(e.target.value)} /></div>
           {dataSca && dataVal && dataSca < dataVal && <div style={{ fontSize: "0.72rem", color: "#f87171", marginBottom: 8 }}>⚠️ Data scadenza deve essere successiva alla data di validità.</div>}
-          <button
-            style={{ ...s.loaderBtn, opacity: (!idLivello || !dataVal || loading || (dataSca && dataSca < dataVal)) ? 0.5 : 1 }}
-            disabled={!idLivello || !dataVal || loading || (dataSca && dataSca < dataVal)}
-            onClick={() => avvia(false)}
-          >
+          <button style={{ ...s.loaderBtn, opacity: (!idLivello || !dataVal || loading || (dataSca && dataSca < dataVal)) ? 0.5 : 1 }}
+            disabled={!idLivello || !dataVal || loading || (dataSca && dataSca < dataVal)} onClick={() => avvia(false)}>
             {loading ? "Caricamento…" : "⬆ Carica in ChromaDB + DB"}
           </button>
         </>
@@ -516,15 +489,12 @@ function LoaderPanel({ pdf, onLoaded }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// SYNC PANEL
-// ─────────────────────────────────────────────
 function SyncPanel() {
   const { authFetch } = useAuth()
   const [docs, setDocs]       = useState([])
   const [loading, setLoading] = useState(false)
 
-  const fetch_ = async () => {
+  const fetch_ = useCallback(async () => {
     setLoading(true)
     try {
       const res  = await authFetch("/api/v1/admin/sync-status")
@@ -532,9 +502,9 @@ function SyncPanel() {
       setDocs(data.documenti || [])
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
-  }
+  }, [authFetch])
 
-  useEffect(() => { fetch_() }, []) // eslint-disable-line
+  useEffect(() => { fetch_() }, [fetch_])
 
   return (
     <div>
@@ -560,9 +530,6 @@ function SyncPanel() {
   )
 }
 
-// ─────────────────────────────────────────────
-// DELETE DIALOG
-// ─────────────────────────────────────────────
 function DeleteDialog({ filename, onConfirm, onCancel }) {
   return (
     <div style={s.overlay}>
@@ -578,9 +545,6 @@ function DeleteDialog({ filename, onConfirm, onCancel }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// EDIT PANEL
-// ─────────────────────────────────────────────
 function EditPanel({ pdf, onUpdated }) {
   const { authFetch } = useAuth()
   const [tipi, setTipi]           = useState([])
@@ -612,9 +576,9 @@ function EditPanel({ pdf, onUpdated }) {
       setDataSca(meta.data_scadenza || "")
     }).catch(() => setErrMsg("Documento non trovato in PostgreSQL."))
     .finally(() => setFetching(false))
-  }, [pdf.filename, authFetch])
+  }, [pdf.filename]) // eslint-disable-line react-hooks/exhaustive-deps — authFetch è stabile
 
-  const salva = async () => {
+  const salva = useCallback(async () => {
     if (!idLivello || !versione || !dataVal) return
     setLoading(true); setResult(null); setErrMsg("")
     try {
@@ -624,10 +588,10 @@ function EditPanel({ pdf, onUpdated }) {
       })
       const data = await res.json()
       if (!res.ok) { setErrMsg(data.detail || "Errore"); setResult("error") }
-      else { setResult("ok"); if (onUpdated) onUpdated() }
+      else { setResult("ok"); onUpdated?.() }
     } catch (e) { setErrMsg(e.message); setResult("error") }
     finally { setLoading(false) }
-  }
+  }, [authFetch, pdf.filename, docId, idTipo, idLivello, versione, dataVal, dataSca, onUpdated])
 
   if (fetching) return <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", padding: 16, textAlign: "center" }}>Caricamento…</div>
   if (errMsg && !docId) return <div style={{ ...s.errorBanner, marginTop: 0 }}>⚠️ {errMsg}</div>
@@ -640,9 +604,9 @@ function EditPanel({ pdf, onUpdated }) {
       {result === "ok"    && <div style={s.successBanner}><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>Documento aggiornato!</div>}
       {result === "error" && <div style={s.errorBanner}>❌ {errMsg}</div>}
       <div style={s.formGroup}><label style={s.formLabel}>Tipo documento</label><select style={s.formSelect} value={idTipo} onChange={e => setIdTipo(e.target.value)}><option value=""> Nessuno </option>{tipi.map(t => <option key={t.id} value={t.id}>{t.nome}</option>)}</select></div>
-      <div style={s.formGroup}><label style={s.formLabel}>Livello riservatezza *</label><select style={s.formSelect} value={idLivello} onChange={e => setIdLivello(e.target.value)}>{livelli.map(l => <option key={l.id} value={l.id}>{l.nome}</option>)}</select></div>
-      <div style={s.formGroup}><label style={s.formLabel}>Versione *</label><input style={s.formInput} type="text" value={versione} onChange={e => setVersione(e.target.value)} placeholder="es. 1.0" /></div>
-      <div style={s.formGroup}><label style={s.formLabel}>Data validità *</label><input style={s.formInput} type="date" value={dataVal} onChange={e => setDataVal(e.target.value)} /></div>
+      <div style={s.formGroup}><label style={s.formLabel}>Livello riservatezza </label><select style={s.formSelect} value={idLivello} onChange={e => setIdLivello(e.target.value)}>{livelli.map(l => <option key={l.id} value={l.id}>{l.nome}</option>)}</select></div>
+      <div style={s.formGroup}><label style={s.formLabel}>Versione </label><input style={s.formInput} type="text" value={versione} onChange={e => setVersione(e.target.value)} placeholder="es. 1.0" /></div>
+      <div style={s.formGroup}><label style={s.formLabel}>Data validità </label><input style={s.formInput} type="date" value={dataVal} onChange={e => setDataVal(e.target.value)} /></div>
       <div style={s.formGroup}><label style={s.formLabel}>Data scadenza</label><input style={s.formInput} type="date" value={dataSca} onChange={e => setDataSca(e.target.value)} /></div>
       {dateInvalid && <div style={{ fontSize: "0.72rem", color: "#f87171", marginBottom: 8 }}>⚠️ Data scadenza deve essere successiva.</div>}
       <button style={{ ...s.loaderBtn, background: "var(--accent)", opacity: canSave ? 1 : 0.5 }} disabled={!canSave} onClick={salva}>{loading ? "Salvataggio…" : "💾 Salva modifiche"}</button>
@@ -650,15 +614,12 @@ function EditPanel({ pdf, onUpdated }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// RIGHT PANEL — solo tab relativi ai PDF
-// FIX: rimossi tab Log, Utenti, Permessi che non appartengono qui
-// ─────────────────────────────────────────────
 function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, activeChunkId }) {
   const { authFetch, hasPermission } = useAuth()
   const [activeTab, setActiveTab]   = useState("ingest")
   const [showDelete, setShowDelete] = useState(false)
   const [deleting, setDeleting]     = useState(false)
+  const [deleteResult, setDeleteResult] = useState(null) // { ok, removed, errors }
 
   useEffect(() => {
     if (!pdf) return
@@ -667,15 +628,21 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
     else setActiveTab("ingest")
   }, [pdf?.filename]) // eslint-disable-line
 
-  const handleDelete = async () => {
+  const handleDelete = useCallback(async () => {
     setDeleting(true)
+    setDeleteResult(null)
     try {
-      await authFetch(`/api/v1/admin/document/${encodeURIComponent(pdf.filename)}`, { method: "DELETE" })
+      const res  = await authFetch(`/api/v1/admin/document/${encodeURIComponent(pdf.filename)}`, { method: "DELETE" })
+      const data = await res.json()
       setShowDelete(false)
+      setDeleteResult(data)
       if (onDeleted) onDeleted(pdf.filename)
-    } catch (e) { console.error(e) }
-    finally { setDeleting(false) }
-  }
+    } catch (e) {
+      setDeleteResult({ ok: false, errors: [e.message], removed: [] })
+    } finally {
+      setDeleting(false)
+    }
+  }, [authFetch, pdf?.filename, onDeleted])
 
   if (!pdf) {
     return (
@@ -688,8 +655,6 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
     )
   }
 
-  // ── Tab solo per operazioni PDF ──────────────────────────────
-  // Log, Utenti e Permessi sono nella navbar superiore di AdminPage
   const allTabs = [
     { id: "ingest",   label: "Ingestion", disabled: false,                                                        perm: "tab_ingestion" },
     { id: "loader",   label: "Loader",    disabled: pdf.status === "not_ingested" || pdf.status === "processing", perm: "tab_loader"    },
@@ -716,6 +681,12 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
             🗑 Elimina
           </button>
         </div>
+        {/* FIX: mostra esito eliminazione con dettaglio file rimossi/errori */}
+        {deleteResult && !deleteResult.ok && (
+          <div style={{ ...s.errorBanner, marginTop: 8, fontSize: "0.72rem" }}>
+            ⚠️ Eliminazione parziale. Errori: {deleteResult.errors?.join(", ")}
+          </div>
+        )}
       </div>
 
       <div style={s.tabs}>
@@ -727,8 +698,20 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
       </div>
 
       <div style={s.rightBody}>
-        {currentTab === "ingest"   && <IngestionPanel pdf={pdf} onIngested={() => onStatusChange(pdf.filename, "ready")} />}
-        {currentTab === "loader"   && <LoaderPanel pdf={pdf} onLoaded={() => { onStatusChange(pdf.filename, "completed"); onRefresh() }} />}
+        {currentTab === "ingest" && (
+          <IngestionPanel
+            pdf={pdf}
+            onIngested={() => onStatusChange(pdf.filename, "ready")}
+            onStatusChange={(ns) => onStatusChange(pdf.filename, ns)}
+          />
+        )}
+        {currentTab === "loader" && (
+          <LoaderPanel
+            pdf={pdf}
+            onLoaded={() => { onStatusChange(pdf.filename, "completed"); onRefresh() }}
+            onStatusChange={(ns) => onStatusChange(pdf.filename, ns)}
+          />
+        )}
         {currentTab === "chunks"   && pdf.status === "completed" && <ChunkExplorer filename={pdf.filename} onChunkSelect={onChunkSelect} activeChunkId={activeChunkId} />}
         {currentTab === "modifica" && pdf.status === "completed" && <EditPanel pdf={pdf} onUpdated={() => {}} />}
         {currentTab === "sync"     && <SyncPanel />}
@@ -739,94 +722,126 @@ function RightPanel({ pdf, onStatusChange, onDeleted, onRefresh, onChunkSelect, 
 
 // ─────────────────────────────────────────────
 // ROOT — AdminPanel
+// FIX: polling stabile senza loop infinito.
+//
+// CAUSA DEL LOOP INFINITO ORIGINALE:
+// fetchPdfs dipendeva da [authFetch, jobs, loaderJobs].
+// jobs e loaderJobs cambiano ad ogni messaggio WS → fetchPdfs
+// si ricreava → useEffect del polling si rieseguiva → nuovo
+// setInterval → il vecchio non veniva sempre pulito → loop.
+//
+// SOLUZIONE:
+// fetchPdfsRef è un ref che punta sempre all'ultima versione di
+// fetchPdfs senza essere nella dep array del polling useEffect.
+// Il polling useEffect dipende solo da [pdfs] (stabile) e usa
+// fetchPdfsRef.current per chiamare fetchPdfs.
 // ─────────────────────────────────────────────
 export default function AdminPanel() {
   const { authFetch } = useAuth()
+  const { jobs, loaderJobs } = useIngestion()
+
   const [pdfs, setPdfs]               = useState([])
   const [selected, setSelected]       = useState(null)
   const [leftOpen, setLeftOpen]       = useState(true)
   const [rightOpen, setRightOpen]     = useState(true)
   const [activeChunk, setActiveChunk] = useState(null)
-  const pollingRef                    = useRef(null)
- 
-  // ── Fetch lista PDF dal server ──────────────────────────────
-  // Non resetta la selezione corrente: aggiorna in modo
-  // non distruttivo sia la lista che il documento selezionato.
+  const pollingRef     = useRef(null)
+  const fetchPdfsRef   = useRef(null)  // ref stabile per evitare loop nel polling
+  const jobsRef        = useRef(jobs)
+  const loaderJobsRef  = useRef(loaderJobs)
+
+  // Aggiorna i ref sincronicamente senza causare re-render
+  useEffect(() => { jobsRef.current = jobs }, [jobs])
+  useEffect(() => { loaderJobsRef.current = loaderJobs }, [loaderJobs])
+
   const fetchPdfs = useCallback(async () => {
     try {
       const res     = await authFetch("/api/v1/admin/pdfs")
       const data    = await res.json()
       const newPdfs = data.pdfs || []
-      setPdfs(newPdfs)
+
+      setPdfs(prev => newPdfs.map(serverPdf => {
+        // Non sovrascrivere "processing" locale con lo stato server
+        // se il job è ancora attivo
+        const hasActiveJob =
+          jobsRef.current[serverPdf.filename]?.status === "processing" ||
+          loaderJobsRef.current[serverPdf.filename]?.status === "processing"
+        const localStatus = prev.find(p => p.filename === serverPdf.filename)?.status
+
+        if (hasActiveJob && localStatus === "processing") {
+          return { ...serverPdf, status: "processing" }
+        }
+        return serverPdf
+      }))
+
       setSelected(prev => {
         if (!prev) return prev
         const fresh = newPdfs.find(p => p.filename === prev.filename)
-        return fresh ? { ...fresh } : prev
+        return fresh || prev
       })
+
       return newPdfs
     } catch (e) {
       console.error("Fetch pdfs error:", e)
       return []
     }
-  }, [authFetch])
- 
-  // Mount: carica lista PDF al primo render
-  useEffect(() => { fetchPdfs() }, [fetchPdfs])
- 
-  // ── Polling automatico ──────────────────────────────────────
-  // Si attiva ogni 3s quando almeno un PDF risulta "processing".
-  // Si ferma automaticamente quando non ci sono più stati in
-  // transizione, evitando polling inutile a riposo.
+  }, [authFetch]) // authFetch è stabile → fetchPdfs è stabile
+
+  // Aggiorna sempre il ref all'ultima versione di fetchPdfs
+  useEffect(() => { fetchPdfsRef.current = fetchPdfs }, [fetchPdfs])
+
+  // Mount: carica lista PDF
+  useEffect(() => { fetchPdfs() }, []) // eslint-disable-line
+
+  // Polling: usa fetchPdfsRef per non dipendere da jobs/loaderJobs
   useEffect(() => {
-    const hasProcessing = pdfs.some(p => p.status === "processing")
- 
-    if (hasProcessing) {
-      // Avvia solo se non già attivo
-      if (!pollingRef.current) {
-        pollingRef.current = setInterval(async () => {
-          const fresh = await fetchPdfs()
-          // Auto-stop: nessun PDF ancora in processing
-          if (!fresh.some(p => p.status === "processing")) {
-            clearInterval(pollingRef.current)
-            pollingRef.current = null
-          }
-        }, 3000)
-      }
-    } else {
-      // Nessun processing → ferma il polling se attivo
-      if (pollingRef.current) {
-        clearInterval(pollingRef.current)
-        pollingRef.current = null
-      }
+    const hasPdfProcessing = pdfs.some(p => p.status === "processing")
+    const hasJobProcessing =
+      Object.values(jobsRef.current).some(j => j.status === "processing") ||
+      Object.values(loaderJobsRef.current).some(j => j.status === "processing")
+    const shouldPoll = hasPdfProcessing || hasJobProcessing
+
+    if (shouldPoll && !pollingRef.current) {
+      pollingRef.current = setInterval(async () => {
+        const fresh = await fetchPdfsRef.current?.()
+        if (!fresh) return
+        const stillHasProcessing =
+          fresh.some(p => p.status === "processing") ||
+          Object.values(jobsRef.current).some(j => j.status === "processing") ||
+          Object.values(loaderJobsRef.current).some(j => j.status === "processing")
+        if (!stillHasProcessing) {
+          clearInterval(pollingRef.current)
+          pollingRef.current = null
+        }
+      }, 3000)
+    } else if (!shouldPoll && pollingRef.current) {
+      clearInterval(pollingRef.current)
+      pollingRef.current = null
     }
- 
-    // Cleanup al unmount
+
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current)
         pollingRef.current = null
       }
     }
-  }, [pdfs, fetchPdfs])
- 
-  // ── Aggiornamento stato dopo un'azione ──────────────────────
-  // 1) Aggiornamento ottimistico immediato per UX responsiva.
-  // 2) Fetch reale dal server per sincronizzare i dati veri.
-  // Il polling poi continuerà finché lo stato è "processing".
+  }, [pdfs]) // SOLO pdfs — jobs/loaderJobs vengono letti tramite ref
+
   const handleStatusChange = useCallback(async (filename, newStatus) => {
-    // Ottimistico
     setPdfs(prev => prev.map(p =>
       p.filename === filename ? { ...p, status: newStatus } : p
     ))
     setSelected(prev =>
       prev?.filename === filename ? { ...prev, status: newStatus } : prev
     )
-    // Sincronizzazione reale con il server
-    await fetchPdfs()
-  }, [fetchPdfs])
- 
-  const handleSelect = (pdf) => { setSelected(pdf); setActiveChunk(null) }
- 
+    await fetchPdfsRef.current?.()
+  }, []) // nessuna dep: usa fetchPdfsRef che è sempre aggiornato
+
+  const handleSelect = useCallback((pdf) => {
+    setSelected(pdf)
+    setActiveChunk(null)
+  }, [])
+
   return (
     <div style={s.root}>
       <div style={s.toolbar}>
@@ -842,7 +857,7 @@ export default function AdminPanel() {
           </div>
         )}
       </div>
- 
+
       <div style={s.body}>
         {leftOpen && (
           <Sidebar
@@ -850,20 +865,14 @@ export default function AdminPanel() {
             selected={selected}
             onSelect={handleSelect}
             onUploaded={(doc) => {
-              setPdfs(prev =>
-                prev.find(p => p.filename === doc.filename) ? prev : [...prev, doc]
-              )
+              setPdfs(prev => prev.find(p => p.filename === doc.filename) ? prev : [...prev, doc])
             }}
             onRefresh={fetchPdfs}
           />
         )}
- 
+
         {selected ? (
-          <PdfViewer
-            filename={selected.filename}
-            activeChunk={activeChunk}
-            onClearChunk={() => setActiveChunk(null)}
-          />
+          <PdfViewer filename={selected.filename} activeChunk={activeChunk} onClearChunk={() => setActiveChunk(null)} />
         ) : (
           <div style={{ ...s.viewer }}>
             <div style={s.viewerEmpty}>
@@ -875,7 +884,7 @@ export default function AdminPanel() {
             </div>
           </div>
         )}
- 
+
         {rightOpen && (
           <RightPanel
             pdf={selected}

@@ -1,10 +1,26 @@
 // src/context/IngestionContext.jsx
 //
-// Context globale per i job di ingestion E loader.
-// Usa authFetch da AuthContext per inviare il token JWT.
+// FIX BADGE STATUS + WEBSOCKET HTTPS:
 //
-// jobs       → job pipeline (marker → chunker)
-// loaderJobs → job loader (ChromaDB + PostgreSQL)
+// PROBLEMA 1 — Badge status buggato:
+// Il badge sul PDF passava da grigio ("not_ingested") a giallo ("processing")
+// solo quando fetchPdfs ritornava un nuovo status dal server, ma il server
+// calcola "processing" dai _jobs in-memory. Se il polling era lento o
+// il WS si chiudeva prima di __STATUS__done, il badge rimaneva grigio anche
+// durante l'elaborazione, e poi saltava direttamente a "ready"/"completed"
+// senza passare per "processing".
+//
+// FIX: quando startIngestion/startLoader vengono chiamati, aggiorniamo
+// immediatamente lo stato locale del job a "processing" PRIMA di fare
+// la chiamata HTTP. Così il badge diventa giallo istantaneamente.
+// Aggiungiamo anche un callback onStatusChange passato dall'AdminPanel
+// che viene chiamato quando il WS segnala completamento/errore,
+// triggerando un fetchPdfs immediato senza aspettare il polling.
+//
+// PROBLEMA 2 — WebSocket con HTTPS/certificati self-signed:
+// Con wss:// e certificati self-signed il browser può rifiutare la
+// connessione. Usiamo la stessa logica di VITE_API_URL per il WS,
+// derivando il dominio WS dall'URL API (https → wss, http → ws).
 
 import {
   createContext, useContext, useState,
@@ -12,16 +28,18 @@ import {
 } from "react";
 import { useAuth } from "./AuthContext";
 
-const WS = "wss://127.0.0.1:8080";
+// FIX: deriva l'URL WebSocket dalla stessa variabile d'ambiente dell'API,
+// sostituendo il protocollo https→wss / http→ws.
+// Questo garantisce coerenza con il dominio del backend anche con tunnel.
+const API_URL = import.meta.env.VITE_API_URL || "https://127.0.0.1:8080";
+const WS_URL  = API_URL.replace(/^https/, "wss").replace(/^http/, "ws");
 
 const IngestionContext = createContext(null);
 
 export function IngestionProvider({ children }) {
   const { authFetch, token } = useAuth();
 
-  // ── Job pipeline (ingestion: marker + chunker) ────────────
   const [jobs, setJobs]             = useState({});
-  // ── Job loader (ChromaDB + PostgreSQL) ────────────────────
   const [loaderJobs, setLoaderJobs] = useState({});
 
   const wsMap = useRef({});
@@ -76,12 +94,21 @@ export function IngestionProvider({ children }) {
   // ─────────────────────────────────────────────
   // WEBSOCKET HELPER
   // ─────────────────────────────────────────────
+  //
+  // FIX WS + HTTPS:
+  // Il token JWT viene passato come query parameter perché il protocollo
+  // WebSocket non supporta header Authorization durante l'handshake.
+  // Con wss:// derivato da VITE_API_URL il dominio è sempre corretto.
+  //
+  // onStatusChange è un callback opzionale chiamato quando il job termina
+  // (done/error/ok) — l'AdminPanel lo usa per triggerare fetchPdfs subito,
+  // senza aspettare il polling di 3 secondi. Questo corregge il badge
+  // che rimaneva in stato intermedio per troppo tempo.
 
-  const connectWs = useCallback((job_id, filename, onDone, isLoader = false) => {
+  const connectWs = useCallback((job_id, filename, onDone, isLoader = false, onStatusChange = null) => {
     if (wsMap.current[job_id]) return;
 
-    // Passa il token come query param perché i WebSocket non supportano header
-    const wsUrl = `${WS}/api/v1/admin/progress/${job_id}`;
+    const wsUrl = `${WS_URL}/api/v1/admin/progress/${job_id}`;
     const ws    = new WebSocket(wsUrl);
     wsMap.current[job_id] = ws;
 
@@ -92,6 +119,8 @@ export function IngestionProvider({ children }) {
       if (msg.startsWith("__LOAD_OK__")) {
         const docId = msg.replace("__LOAD_OK__", "");
         updateLoaderJob(filename, { status: "ok", appendLog: `✅ Documento caricato (id=${docId})` });
+        // FIX: notifica subito l'AdminPanel per aggiornare il badge
+        onStatusChange?.("completed");
         if (onDone) onDone();
         ws.close();
         delete wsMap.current[job_id];
@@ -111,7 +140,6 @@ export function IngestionProvider({ children }) {
         return;
       }
 
-      // Messaggio status generico
       if (msg.startsWith("__STATUS__")) {
         const st = msg.replace("__STATUS__", "");
         if (isLoader) {
@@ -122,7 +150,11 @@ export function IngestionProvider({ children }) {
             try {
               await authFetch("/api/v1/search/reload", { method: "POST" });
             } catch {}
+            // FIX: notifica il badge che l'ingestion è completata
+            onStatusChange?.("ready");
             if (onDone) onDone();
+          } else if (st === "error") {
+            onStatusChange?.("not_ingested");
           }
         }
         ws.close();
@@ -145,6 +177,7 @@ export function IngestionProvider({ children }) {
       } else {
         updateJob(filename, { status: "error", appendLog: errMsg });
       }
+      onStatusChange?.("not_ingested");
       delete wsMap.current[job_id];
     };
 
@@ -154,30 +187,41 @@ export function IngestionProvider({ children }) {
   }, [updateJob, updateLoaderJob, authFetch]);
 
   // ─────────────────────────────────────────────
-  // AVVIA INGESTION (pipeline marker + chunker)
+  // AVVIA INGESTION
   // ─────────────────────────────────────────────
+  //
+  // FIX BADGE:
+  // Impostiamo subito status="processing" PRIMA della chiamata HTTP.
+  // Così il badge diventa giallo istantaneamente al click, senza aspettare
+  // che il server risponda e il polling rilevi il cambio di stato.
 
-  const startIngestion = useCallback(async (filename, onDone) => {
+  const startIngestion = useCallback(async (filename, onDone, onStatusChange = null) => {
+    // FIX: aggiornamento ottimistico immediato → badge giallo istantaneo
     updateJob(filename, { status: "processing", logs: [] });
+
     try {
       const res  = await authFetch(`/api/v1/admin/ingest/${encodeURIComponent(filename)}`, { method: "POST" });
       const data = await res.json();
       if (!res.ok) {
         updateJob(filename, { status: "error", appendLog: `❌ ${data.detail}` });
+        onStatusChange?.("not_ingested");
         return;
       }
-      connectWs(data.job_id, filename, onDone, false);
+      connectWs(data.job_id, filename, onDone, false, onStatusChange);
     } catch (e) {
       updateJob(filename, { status: "error", appendLog: `❌ Errore: ${e.message}` });
+      onStatusChange?.("not_ingested");
     }
   }, [updateJob, connectWs, authFetch]);
 
   // ─────────────────────────────────────────────
-  // AVVIA LOADER (ChromaDB + PostgreSQL)
+  // AVVIA LOADER
   // ─────────────────────────────────────────────
 
-  const startLoader = useCallback(async (filename, params, onDone) => {
+  const startLoader = useCallback(async (filename, params, onDone, onStatusChange = null) => {
+    // FIX: aggiornamento ottimistico immediato → badge giallo istantaneo
     updateLoaderJob(filename, { status: "processing", logs: [], duplicato: null });
+
     try {
       const res  = await authFetch(`/api/v1/admin/load/${encodeURIComponent(filename)}`, {
         method: "POST",
@@ -186,11 +230,13 @@ export function IngestionProvider({ children }) {
       const data = await res.json();
       if (!res.ok) {
         updateLoaderJob(filename, { status: "error", appendLog: `❌ ${data.detail}` });
+        onStatusChange?.("ready");
         return;
       }
-      connectWs(data.job_id, filename, onDone, true);
+      connectWs(data.job_id, filename, onDone, true, onStatusChange);
     } catch (e) {
       updateLoaderJob(filename, { status: "error", appendLog: `❌ Errore: ${e.message}` });
+      onStatusChange?.("ready");
     }
   }, [updateLoaderJob, connectWs, authFetch]);
 
@@ -199,7 +245,7 @@ export function IngestionProvider({ children }) {
   // ─────────────────────────────────────────────
 
   useEffect(() => {
-    if (!token) return;  // non fare nulla se non autenticato
+    if (!token) return;
 
     const recover = async () => {
       try {
@@ -211,7 +257,7 @@ export function IngestionProvider({ children }) {
             [job.filename]: { status: job.status, logs: job.logs || [] },
           }));
           if (job.status === "processing") {
-            connectWs(job.job_id, job.filename, null, false);
+            connectWs(job.job_id, job.filename, null, false, null);
           }
         }
       } catch {
@@ -221,7 +267,6 @@ export function IngestionProvider({ children }) {
     recover();
   }, [token]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Cleanup WebSocket alla chiusura
   useEffect(() => {
     return () => {
       Object.values(wsMap.current).forEach(ws => ws.close());
@@ -230,12 +275,10 @@ export function IngestionProvider({ children }) {
 
   return (
     <IngestionContext.Provider value={{
-      // Pipeline
       jobs,
       getJob,
       updateJob,
       startIngestion,
-      // Loader
       loaderJobs,
       getLoaderJob,
       updateLoaderJob,

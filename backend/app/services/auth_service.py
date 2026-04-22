@@ -275,7 +275,7 @@ def set_refresh_cookie(response, token: str) -> None:
         value    = token,
         httponly = True,
         secure   = True,
-        samesite = "strict",
+        samesite = "none",
         path     = REFRESH_COOKIE_PATH,
         max_age  = REFRESH_TOKEN_DAYS * 24 * 60 * 60,
     )

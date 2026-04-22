@@ -1,12 +1,13 @@
-// // src/pages/ChatPage.jsx
 // import { useState, useEffect, useRef } from 'react'
 // import { useNavigate } from 'react-router-dom'
 // import ReactMarkdown from 'react-markdown'
 // import remarkGfm from 'remark-gfm'
 // import { useChat } from '../context/ChatContext'
-// import { useAuth } from '../context/AuthContext'   // ← NUOVO
-// import ThemeToggle from "../components/ThemeToggle";
-// const BASE_SERVER_URL = 'http://127.0.0.1:8080'
+// import { useAuth } from '../context/AuthContext'
+// import ThemeToggle from "../components/ThemeToggle"
+// import logo from "../assets/Logo Exprivia pulito.png"
+
+// const BASE_SERVER_URL = 'https://127.0.0.1:8080'
 
 // const formatBotResponse = (text) => {
 //   if (!text) return ''
@@ -27,9 +28,7 @@
 //     : base
 // }
 
-// // ─────────────────────────────────────────────
-// // CITATION HELPERS
-// // ─────────────────────────────────────────────
+// // ─── Citation helpers ──────────────────────────────────────────
 // function buildSourceMap(sources) {
 //   const map = {}
 //   if (!sources) return map
@@ -87,18 +86,23 @@
 //           const label = part.page ? `${part.title} · p.${part.page}` : part.title
 //           return href ? (
 //             <a key={i} href={href} target="_blank" rel="noreferrer"
-//               style={{ display: 'inline-flex', alignItems: 'center', gap: '3px', fontSize: '0.72em',
-//                 fontFamily: "'DM Mono', monospace", background: 'rgba(79,142,247,0.12)',
-//                 border: '1px solid rgba(79,142,247,0.3)', borderRadius: '4px', padding: '1px 6px',
-//                 color: 'var(--accent)', textDecoration: 'none', verticalAlign: 'middle',
-//                 marginLeft: '2px', lineHeight: 1.4, whiteSpace: 'nowrap' }}>
+//               style={{
+//                 display: 'inline-flex', alignItems: 'center', gap: '3px',
+//                 fontSize: '0.72em', fontFamily: "'JetBrains Mono', monospace",
+//                 background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
+//                 borderRadius: '4px', padding: '1px 6px', color: 'var(--accent-bright)',
+//                 textDecoration: 'none', verticalAlign: 'middle',
+//                 marginLeft: '2px', lineHeight: 1.4, whiteSpace: 'nowrap',
+//               }}>
 //               📄 {label}
 //             </a>
 //           ) : (
-//             <span key={i} style={{ fontSize: '0.72em', fontFamily: "'DM Mono', monospace",
-//               background: 'rgba(79,142,247,0.08)', border: '1px solid rgba(79,142,247,0.2)',
-//               borderRadius: '4px', padding: '1px 6px', color: 'var(--accent)',
-//               verticalAlign: 'middle', marginLeft: '2px' }}>
+//             <span key={i} style={{
+//               fontSize: '0.72em', fontFamily: "'JetBrains Mono', monospace",
+//               background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
+//               borderRadius: '4px', padding: '1px 6px', color: 'var(--accent-bright)',
+//               verticalAlign: 'middle', marginLeft: '2px',
+//             }}>
 //               📄 {label}
 //             </span>
 //           )
@@ -176,21 +180,27 @@
 // function DebugDrawer({ open, onClose, debugData }) {
 //   if (!open) return null
 //   return (
-//     <div style={{ position: 'fixed', top: 0, right: 0, bottom: 0, width: 420,
+//     <div style={{
+//       position: 'fixed', top: 0, right: 0, bottom: 0, width: 420,
 //       background: 'var(--surface)', borderLeft: '1px solid var(--border-strong)',
 //       display: 'flex', flexDirection: 'column', zIndex: 200,
-//       boxShadow: '-8px 0 32px rgba(0,0,0,0.4)' }}>
-//       <div style={{ padding: '16px 18px', borderBottom: '1px solid var(--border)',
-//         display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0 }}>
+//       boxShadow: '-8px 0 36px rgba(0,0,0,0.45)',
+//     }}>
+//       <div style={{
+//         padding: '16px 18px', borderBottom: '1px solid var(--border)',
+//         display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0,
+//       }}>
 //         <div>
 //           <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text)' }}>🔍 Retrieval Debug</div>
-//           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2, fontFamily: "'DM Mono', monospace" }}>
+//           <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2, fontFamily: "'JetBrains Mono', monospace" }}>
 //             {debugData?.length || 0} chunk recuperati
 //           </div>
 //         </div>
-//         <button onClick={onClose} style={{ background: 'none', border: '1px solid var(--border-strong)',
-//           borderRadius: 6, padding: '4px 10px', cursor: 'pointer', color: 'var(--text-muted)',
-//           fontFamily: 'inherit', fontSize: '0.8rem' }}>✕ Chiudi</button>
+//         <button onClick={onClose} style={{
+//           background: 'none', border: '1px solid var(--border-strong)',
+//           borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
+//           color: 'var(--text-muted)', fontFamily: 'inherit', fontSize: '0.8rem',
+//         }}>✕ Chiudi</button>
 //       </div>
 //       <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
 //         {(!debugData || debugData.length === 0) ? (
@@ -201,39 +211,52 @@
 //           const hasPage = chunk.pagina && chunk.pagina !== 'N/D' && chunk.pagina !== ''
 //           const href    = buildDebugHref(chunk)
 //           return (
-//             <div key={i} style={{ background: 'var(--surface2)', border: '1px solid var(--border)',
-//               borderRadius: 8, marginBottom: 6, overflow: 'hidden' }}>
+//             <div key={i} style={{
+//               background: 'var(--surface2)', border: '1px solid var(--border)',
+//               borderRadius: 8, marginBottom: 6, overflow: 'hidden',
+//             }}>
 //               <div style={{ padding: '9px 12px', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-//                 <span style={{ fontSize: '0.65rem', fontFamily: "'DM Mono', monospace",
-//                   color: 'var(--accent)', flexShrink: 0, minWidth: 24 }}>C{chunk.chunk_idx}</span>
+//                 <span style={{ fontSize: '0.65rem', fontFamily: "'JetBrains Mono', monospace", color: 'var(--accent-bright)', flexShrink: 0, minWidth: 24 }}>
+//                   C{chunk.chunk_idx}
+//                 </span>
 //                 <div style={{ flex: 1, minWidth: 0 }}>
-//                   <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text)',
-//                     overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chunk.titolo}</div>
+//                   <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+//                     {chunk.titolo}
+//                   </div>
 //                   {chunk.breadcrumb && (
-//                     <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1,
-//                       overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{chunk.breadcrumb}</div>
+//                     <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+//                       {chunk.breadcrumb}
+//                     </div>
 //                   )}
 //                 </div>
-//                 <span style={{ fontSize: '0.65rem', fontFamily: "'DM Mono', monospace",
+//                 <span style={{
+//                   fontSize: '0.65rem', fontFamily: "'JetBrains Mono', monospace",
 //                   padding: '2px 7px', borderRadius: 20, flexShrink: 0,
-//                   background: hasPage ? 'rgba(79,142,247,0.12)' : 'var(--surface)',
-//                   color: hasPage ? 'var(--accent)' : 'var(--text-muted)',
-//                   border: `1px solid ${hasPage ? 'rgba(79,142,247,0.3)' : 'var(--border)'}` }}>
+//                   background: hasPage ? 'var(--accent-dim)' : 'var(--surface)',
+//                   color: hasPage ? 'var(--accent-bright)' : 'var(--text-muted)',
+//                   border: `1px solid ${hasPage ? 'var(--border-accent)' : 'var(--border)'}`,
+//                 }}>
 //                   {hasPage ? `p.${chunk.pagina}` : 'no pag.'}
 //                 </span>
 //               </div>
-//               <div style={{ padding: '6px 12px 10px', borderTop: '1px solid var(--border)',
-//                 fontSize: '0.7rem', fontFamily: "'DM Mono', monospace",
-//                 color: 'var(--text-dim)', lineHeight: 1.6 }}>
+//               <div style={{
+//                 padding: '6px 12px 10px', borderTop: '1px solid var(--border)',
+//                 fontSize: '0.7rem', fontFamily: "'JetBrains Mono', monospace",
+//                 color: 'var(--text-dim)', lineHeight: 1.6,
+//               }}>
 //                 {href && (
-//                   <a href={href} target="_blank" rel="noreferrer" style={{ fontSize: '0.65rem',
-//                     color: '#34d399', textDecoration: 'none', marginBottom: 6, display: 'inline-block' }}>
+//                   <a href={href} target="_blank" rel="noreferrer" style={{
+//                     fontSize: '0.65rem', color: 'var(--green)', textDecoration: 'none',
+//                     marginBottom: 6, display: 'inline-block',
+//                   }}>
 //                     🔗 apri PDF
 //                   </a>
 //                 )}
-//                 <div style={{ background: 'var(--bg)', borderRadius: 4, padding: '6px 8px',
+//                 <div style={{
+//                   background: 'var(--bg)', borderRadius: 4, padding: '6px 8px',
 //                   border: '1px solid var(--border)', whiteSpace: 'pre-wrap',
-//                   maxHeight: 120, overflowY: 'auto' }}>{chunk.preview}</div>
+//                   maxHeight: 120, overflowY: 'auto',
+//                 }}>{chunk.preview}</div>
 //               </div>
 //             </div>
 //           )
@@ -249,13 +272,13 @@
 // export default function ChatPage() {
 //   const navigate  = useNavigate()
 //   const { messages, sessionId, addMessage, resetChat } = useChat()
-//   const { authFetch, user, logout, isAdmin , hasPermission} = useAuth()   // ← NUOVO
+//   const { authFetch, user, logout, hasPermission } = useAuth()
 
-//   const [input,          setInput]          = useState('')
-//   const [isTyping,       setIsTyping]       = useState(false)
-//   const [debugOpen,      setDebugOpen]      = useState(false)
-//   const [lastDebug,      setLastDebug]      = useState(null)
-//   const [debugEnabled,   setDebugEnabled]   = useState(false)
+//   const [input,        setInput]        = useState('')
+//   const [isTyping,     setIsTyping]     = useState(false)
+//   const [debugOpen,    setDebugOpen]    = useState(false)
+//   const [lastDebug,    setLastDebug]    = useState(null)
+//   const [debugEnabled, setDebugEnabled] = useState(false)
 //   const bottomRef = useRef(null)
 
 //   useEffect(() => {
@@ -270,7 +293,6 @@
 //     setIsTyping(true)
 
 //     try {
-//       // ← CAMBIATO: authFetch invece di fetch
 //       const response = await authFetch('/api/v1/chat', {
 //         method: 'POST',
 //         body: JSON.stringify({
@@ -299,10 +321,21 @@
 
 //   return (
 //     <div className="app-container">
+//       {/* ── Sidebar ── */}
 //       <aside className="chat-sidebar">
+
+//         {/* Brand con logo Exprivia */}
 //         <div className="sidebar-brand">
-//           <div className="sidebar-brand-icon">⚡</div>
-//           <span className="sidebar-brand-name">Policy Navigator</span>
+//           <img
+//             src={logo}
+//             alt="Exprivia"
+//             className="exprivia-logo-sidebar"
+//           />
+//           <div className="sidebar-brand-divider" />
+//           <div className="sidebar-brand-text">
+//             <span className="sidebar-brand-name">Policy Navigator</span>
+//             <span className="sidebar-brand-sub">AI Assistant</span>
+//           </div>
 //         </div>
 
 //         <button className="new-chat-btn" onClick={resetChat}>
@@ -328,10 +361,10 @@
 //           {/* Toggle debug */}
 //           <button onClick={() => setDebugEnabled(d => !d)} style={{
 //             width: '100%', padding: '7px 10px', marginBottom: 6,
-//             background: debugEnabled ? 'rgba(245,158,11,0.1)' : 'transparent',
-//             border: `1px solid ${debugEnabled ? 'rgba(245,158,11,0.35)' : 'var(--border-strong)'}`,
+//             background: debugEnabled ? 'var(--yellow-dim)' : 'transparent',
+//             border: `1px solid ${debugEnabled ? 'rgba(240,173,58,0.38)' : 'var(--border-strong)'}`,
 //             borderRadius: 'var(--radius-sm)',
-//             color: debugEnabled ? '#f59e0b' : 'var(--text-muted)',
+//             color: debugEnabled ? 'var(--yellow)' : 'var(--text-muted)',
 //             fontFamily: 'inherit', fontSize: '0.78rem', fontWeight: 600,
 //             cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
 //           }}>
@@ -342,8 +375,8 @@
 //           {lastDebug && (
 //             <button onClick={() => setDebugOpen(true)} style={{
 //               width: '100%', padding: '7px 10px', marginBottom: 6,
-//               background: 'rgba(79,142,247,0.08)', border: '1px solid rgba(79,142,247,0.25)',
-//               borderRadius: 'var(--radius-sm)', color: 'var(--accent)',
+//               background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
+//               borderRadius: 'var(--radius-sm)', color: 'var(--accent-bright)',
 //               fontFamily: 'inherit', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer',
 //             }}>
 //               🔍 Vedi {lastDebug.length} chunk recuperati
@@ -356,7 +389,7 @@
 //             {user?.nome ? `${user.nome} ${user.cognome || ''}`.trim() : user?.email}
 //           </button>
 
-//           {/* Admin (solo se admin) */}
+//           {/* Admin (solo se permesso) */}
 //           {hasPermission('page_admin') && (
 //             <button className="admin-nav-btn" onClick={() => navigate('/admin')} style={{ marginBottom: 6 }}>
 //               <span>⚙</span> Pannello Admin
@@ -364,26 +397,34 @@
 //           )}
 
 //           {/* Logout */}
-//           <button className="admin-nav-btn" onClick={handleLogout}
-//             style={{ color: '#f87171', borderColor: 'rgba(239,68,68,0.25)' }}>
+//           <button
+//             className="admin-nav-btn"
+//             onClick={handleLogout}
+//             style={{ color: 'var(--red)', borderColor: 'var(--red-dim)' }}
+//           >
 //             <span>↩</span> Esci
 //           </button>
 
 //           <div className="session-badge" style={{ marginTop: '8px' }}>
 //             ID: {sessionId}
 //           </div>
+
 //           <ThemeToggle />
 //         </div>
 //       </aside>
 
+//       {/* ── Chat main ── */}
 //       <main className="chat-window">
 //         <div className="chat-topbar">
 //           <span className="topbar-title">Assistente documentale</span>
 //           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
 //             {debugEnabled && (
-//               <span style={{ fontSize: '0.72rem', fontFamily: "'DM Mono', monospace",
-//                 padding: '2px 8px', borderRadius: 20, background: 'rgba(245,158,11,0.1)',
-//                 color: '#f59e0b', border: '1px solid rgba(245,158,11,0.3)' }}>
+//               <span style={{
+//                 fontSize: '0.72rem', fontFamily: "'JetBrains Mono', monospace",
+//                 padding: '2px 8px', borderRadius: 20,
+//                 background: 'var(--yellow-dim)', color: 'var(--yellow)',
+//                 border: '1px solid rgba(240,173,58,0.32)',
+//               }}>
 //                 🔍 debug on
 //               </span>
 //             )}
@@ -406,7 +447,9 @@
 //           ))}
 //           {isTyping && (
 //             <div className="typing-bubble">
-//               <div className="typing-dot" /><div className="typing-dot" /><div className="typing-dot" />
+//               <div className="typing-dot" />
+//               <div className="typing-dot" />
+//               <div className="typing-dot" />
 //             </div>
 //           )}
 //           <div ref={bottomRef} />
@@ -431,7 +474,13 @@
 //   )
 // }
 
+
 // src/pages/ChatPage.jsx
+// src/pages/ChatPage.jsx
+// FIX LINK: src.link già contiene #page=N — non ricostruire l'URL nel frontend.
+// FIX GUARD: rimosso il filtro FUORI SCOPE dall'LLM, solo jailbreak regex.
+// FIX CROSS-DOC: routing agent più tollerante (vedi rag_chain_langgraph.py).
+
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
@@ -448,18 +497,28 @@ const formatBotResponse = (text) => {
   return text.replace(/<\/?[A-Z]+>/g, '').trim()
 }
 
+/**
+ * FIX PRINCIPALE: src.link arriva già come "/static/FILE.pdf#page=N"
+ * Basta anteporre BASE_SERVER_URL — NON aggiungere #page un'altra volta.
+ * Se src.link è vuoto, usa src.page come fallback per costruire l'URL statico.
+ */
 function buildPdfHref(src) {
-  if (!src?.link) return null
-  const base = `${BASE_SERVER_URL}${src.link}`.split('#')[0]
-  return src.page ? `${base}#page=${src.page}` : base
+  if (!src) return null
+
+  // Caso 1: link completo con #page già incluso (caso normale post-fix)
+  if (src.link) {
+    return `${BASE_SERVER_URL}${src.link}`
+  }
+
+  // Caso 2: fallback vecchio — nessun anchor_link, costruisci manualmente
+  // (non dovrebbe più capitare ma lo teniamo per sicurezza)
+  return null
 }
 
 function buildDebugHref(chunk) {
   if (!chunk?.anchor_link) return null
-  const base = `${BASE_SERVER_URL}${chunk.anchor_link}`.split('#')[0]
-  return chunk.pagina && chunk.pagina !== 'N/D'
-    ? `${base}#page=${chunk.pagina}`
-    : base
+  // anchor_link già include #page=N
+  return `${BASE_SERVER_URL}${chunk.anchor_link}`
 }
 
 // ─── Citation helpers ──────────────────────────────────────────
@@ -503,8 +562,18 @@ function InlineCitationText({ text, sourceMap }) {
     const src   = sourceMap[inner]
     if (match.index > lastIndex) parts.push({ type: 'text', content: text.slice(lastIndex, match.index) })
     if (src) {
+      // Usa la pagina dalla citazione inline [TITOLO|pN] se disponibile,
+      // altrimenti quella della sorgente
       const page = match[2] || src.page || ''
-      parts.push({ type: 'citation', title: match[1].trim(), page, src })
+      // Costruisce href usando il link completo della sorgente
+      // ma sostituisce il #page con quello della citazione inline se diverso
+      let citationSrc = src
+      if (match[2] && src.link) {
+        // Sostituzione numero pagina nell'anchor_link se specificato inline
+        const newLink = src.link.replace(/#page=\d+/, `#page=${match[2]}`)
+        citationSrc = { ...src, link: newLink, page: match[2] }
+      }
+      parts.push({ type: 'citation', title: match[1].trim(), page, src: citationSrc })
     } else {
       parts.push({ type: 'text', content: match[0] })
     }
@@ -643,6 +712,7 @@ function DebugDrawer({ open, onClose, debugData }) {
           </div>
         ) : debugData.map((chunk, i) => {
           const hasPage = chunk.pagina && chunk.pagina !== 'N/D' && chunk.pagina !== ''
+          // FIX: anchor_link già include #page
           const href    = buildDebugHref(chunk)
           return (
             <div key={i} style={{
@@ -683,7 +753,7 @@ function DebugDrawer({ open, onClose, debugData }) {
                     fontSize: '0.65rem', color: 'var(--green)', textDecoration: 'none',
                     marginBottom: 6, display: 'inline-block',
                   }}>
-                    🔗 apri PDF
+                    🔗 apri PDF (p.{chunk.pagina})
                   </a>
                 )}
                 <div style={{
@@ -700,9 +770,6 @@ function DebugDrawer({ open, onClose, debugData }) {
   )
 }
 
-// ─────────────────────────────────────────────
-// CHAT PAGE
-// ─────────────────────────────────────────────
 export default function ChatPage() {
   const navigate  = useNavigate()
   const { messages, sessionId, addMessage, resetChat } = useChat()
@@ -755,16 +822,9 @@ export default function ChatPage() {
 
   return (
     <div className="app-container">
-      {/* ── Sidebar ── */}
       <aside className="chat-sidebar">
-
-        {/* Brand con logo Exprivia */}
         <div className="sidebar-brand">
-          <img
-            src={logo}
-            alt="Exprivia"
-            className="exprivia-logo-sidebar"
-          />
+          <img src={logo} alt="Exprivia" className="exprivia-logo-sidebar" />
           <div className="sidebar-brand-divider" />
           <div className="sidebar-brand-text">
             <span className="sidebar-brand-name">Policy Navigator</span>
@@ -792,7 +852,6 @@ export default function ChatPage() {
         </div>
 
         <div className="sidebar-footer">
-          {/* Toggle debug */}
           <button onClick={() => setDebugEnabled(d => !d)} style={{
             width: '100%', padding: '7px 10px', marginBottom: 6,
             background: debugEnabled ? 'var(--yellow-dim)' : 'transparent',
@@ -817,20 +876,17 @@ export default function ChatPage() {
             </button>
           )}
 
-          {/* Link profilo */}
           <button className="admin-nav-btn" onClick={() => navigate('/profile')} style={{ marginBottom: 6 }}>
             <span>👤</span>
             {user?.nome ? `${user.nome} ${user.cognome || ''}`.trim() : user?.email}
           </button>
 
-          {/* Admin (solo se permesso) */}
           {hasPermission('page_admin') && (
             <button className="admin-nav-btn" onClick={() => navigate('/admin')} style={{ marginBottom: 6 }}>
               <span>⚙</span> Pannello Admin
             </button>
           )}
 
-          {/* Logout */}
           <button
             className="admin-nav-btn"
             onClick={handleLogout}
@@ -847,7 +903,6 @@ export default function ChatPage() {
         </div>
       </aside>
 
-      {/* ── Chat main ── */}
       <main className="chat-window">
         <div className="chat-topbar">
           <span className="topbar-title">Assistente documentale</span>

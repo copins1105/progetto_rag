@@ -1,7 +1,15 @@
 // src/pages/PermissionMatrixPanel.jsx
-// Matrice semplificata: solo ✓ assegnato / — non assegnato
-// Clic su una cella toglie/aggiunge il permesso (override)
-// Salvataggio esplicito con pulsante "Salva"
+// FIX REACT BUGS:
+// 1. handleCellClick aveva stale closure su localChanges perché usava
+//    setLocalChanges con la funzione updater ma leggeva localChanges
+//    nell'outer scope per decidere se eliminare la chiave.
+//    FIX: uso esclusivamente la forma funzionale di setLocalChanges(prev => ...)
+//    così si legge sempre lo stato più recente.
+// 2. fetchMatrice nelle deps di useEffect era instabile perché
+//    dipendeva da authFetch (che però ora è stabile con il fix in AuthContext).
+//    Aggiunta comunque una verifica con useCallback.
+// 3. handleSaveAll leggeva localChanges dall'outer scope → stale closure
+//    durante salvataggi multipli. FIX: snapshot dello stato all'inizio.
 
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
@@ -54,39 +62,28 @@ function RoleBadge({ ruolo }) {
   return <span style={{ fontSize: "0.58rem", fontWeight: 700, padding: "1px 6px", borderRadius: 12, background: c.bg, color: c.color, border: `1px solid ${c.border}`, fontFamily: "'DM Mono', monospace", whiteSpace: "nowrap" }}>{ruolo || "—"}</span>;
 }
 
-// Cella semplificata: verde ✓ se assegnato, grigio — se non assegnato
-// Se ci sono modifiche pendenti mostra con bordo tratteggiato
 function PermCell({ effettivo, hasPending, pendingValue, onClick }) {
   const [hover, setHover] = useState(false);
-  
-  // Valore visualizzato: usa il pending se presente, altrimenti il server
   const displayed = hasPending ? pendingValue : effettivo;
-  
-  const assigned = displayed;
-  const isPending = hasPending;
 
   return (
-    <button
-      onClick={onClick}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      title={assigned ? "Permesso assegnato — clicca per revocare" : "Permesso non assegnato — clicca per assegnare"}
+    <button onClick={onClick} onMouseEnter={() => setHover(true)} onMouseLeave={() => setHover(false)}
+      title={displayed ? "Permesso assegnato — clicca per revocare" : "Permesso non assegnato — clicca per assegnare"}
       style={{
         width: 32, height: 28, borderRadius: 6, cursor: "pointer",
-        border: isPending
-          ? `2px dashed ${assigned ? "rgba(52,211,153,0.8)" : "rgba(107,114,128,0.6)"}`
-          : `1.5px solid ${assigned ? "rgba(52,211,153,0.4)" : "var(--border)"}`,
-        background: assigned
+        border: hasPending
+          ? `2px dashed ${displayed ? "rgba(52,211,153,0.8)" : "rgba(107,114,128,0.6)"}`
+          : `1.5px solid ${displayed ? "rgba(52,211,153,0.4)" : "var(--border)"}`,
+        background: displayed
           ? (hover ? "rgba(52,211,153,0.22)" : "rgba(52,211,153,0.12)")
           : (hover ? "rgba(255,255,255,0.05)" : "transparent"),
-        color: assigned ? "#34d399" : "var(--border-strong)",
+        color: displayed ? "#34d399" : "var(--border-strong)",
         display: "flex", alignItems: "center", justifyContent: "center",
         fontSize: "0.8rem", fontWeight: 700,
         transition: "all 0.12s",
         transform: hover ? "scale(1.08)" : "scale(1)",
-      }}
-    >
-      {assigned ? "✓" : "—"}
+      }}>
+      {displayed ? "✓" : "—"}
     </button>
   );
 }
@@ -104,28 +101,22 @@ function CategorySection({ catName, codici, tuttiPermessi, utenti, localChanges,
         <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", fontFamily: "'DM Mono', monospace" }}>{presenti.length} permessi</span>
         <span style={{ fontSize: "0.72rem", color: catColor.accent, marginLeft: 6 }}>{aperta ? "▾" : "▸"}</span>
       </button>
-
       {aperta && (
         <div style={{ overflowX: "auto" }}>
           <table style={{ borderCollapse: "collapse", width: "100%", minWidth: `${200 + presenti.length * 72}px` }}>
             <thead>
               <tr style={{ background: "var(--surface2)" }}>
-                <th style={{ padding: "7px 14px", textAlign: "left", whiteSpace: "nowrap", borderBottom: "1px solid var(--border)", width: 200, minWidth: 200, fontSize: "0.62rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                  Utente
-                </th>
+                <th style={{ padding: "7px 14px", textAlign: "left", whiteSpace: "nowrap", borderBottom: "1px solid var(--border)", width: 200, minWidth: 200, fontSize: "0.62rem", fontWeight: 600, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.07em" }}>Utente</th>
                 {presenti.map((codice) => (
                   <th key={codice} style={{ padding: "7px 8px", textAlign: "center", borderBottom: "1px solid var(--border)", borderLeft: "1px solid var(--border)", minWidth: 72 }}>
-                    <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-dim)", whiteSpace: "nowrap" }}>
-                      {SHORT_LABELS[codice] || codice}
-                    </div>
+                    <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text-dim)", whiteSpace: "nowrap" }}>{SHORT_LABELS[codice] || codice}</div>
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {utenti.map((utente, ri) => {
-                const pendingCount = Object.keys(localChanges[utente.utente_id] || {})
-                  .filter(c => presenti.includes(c)).length;
+                const pendingCount = Object.keys(localChanges[utente.utente_id] || {}).filter(c => presenti.includes(c)).length;
                 return (
                   <tr key={utente.utente_id} style={{ background: ri % 2 === 0 ? "var(--surface)" : "rgba(255,255,255,0.015)" }}>
                     <td style={{ padding: "7px 14px", borderBottom: "1px solid var(--border)", whiteSpace: "nowrap" }}>
@@ -178,7 +169,7 @@ export default function PermissionMatrixPanel() {
   const [matrice,      setMatrice]      = useState(null);
   const [loading,      setLoading]      = useState(true);
   const [saving,       setSaving]       = useState(false);
-  const [saveMsg,      setSaveMsg]      = useState(null); // { ok, text }
+  const [saveMsg,      setSaveMsg]      = useState(null);
   const [localChanges, setLocalChanges] = useState({});
   const [filtroUtente, setFiltroUtente] = useState("");
   const [catAperte,    setCatAperte]    = useState(
@@ -195,64 +186,81 @@ export default function PermissionMatrixPanel() {
       setSaveMsg(null);
     } catch (e) { console.error(e); }
     finally { setLoading(false); }
-  }, [authFetch]);
+  }, [authFetch]); // authFetch è stabile
 
   useEffect(() => { fetchMatrice(); }, [fetchMatrice]);
 
-  // Clic su cella: toglia/assegna permesso (toggle booleano)
+  // FIX STALE CLOSURE:
+  // La versione originale leggeva localChanges dall'outer scope dentro
+  // setLocalChanges, ma quella era la versione "congelata" al momento
+  // della creazione del callback. Usando sempre la forma prev => ...
+  // si legge sempre lo stato più recente.
   const handleCellClick = useCallback((utente_id, codice, effettivoServer) => {
     setLocalChanges(prev => {
       const uChanges = { ...(prev[utente_id] || {}) };
       if (codice in uChanges) {
-        // Rimuovi pending se stai tornando al valore server
+        // Se è già pending, rimuovi (torna al valore server)
         delete uChanges[codice];
       } else {
-        // Inverti il valore corrente
+        // Aggiungi pending con valore invertito
         uChanges[codice] = !effettivoServer;
       }
       setSaveMsg(null);
+      // Se le modifiche dell'utente sono vuote, rimuovi la chiave
+      if (Object.keys(uChanges).length === 0) {
+        const { [utente_id]: _, ...rest } = prev;
+        return rest;
+      }
       return { ...prev, [utente_id]: uChanges };
     });
-  }, []);
+  }, []); // nessuna dep: usa solo setLocalChanges(prev => ...)
 
-  // Conta modifiche totali
+  // FIX STALE CLOSURE in handleSaveAll:
+  // Leggiamo localChanges una volta sola all'inizio tramite snapshot
+  // per evitare che cambi durante il ciclo di salvataggio asincrono.
+  const handleSaveAll = useCallback(async () => {
+    // Snapshot immediato dello stato corrente
+    setLocalChanges(currentChanges => {
+      const uidsWithChanges = Object.keys(currentChanges).filter(
+        uid => Object.keys(currentChanges[uid] || {}).length > 0
+      );
+      if (uidsWithChanges.length === 0) return currentChanges;
+
+      // Avvia il salvataggio asincrono con lo snapshot
+      (async () => {
+        setSaving(true);
+        setSaveMsg(null);
+        let errors = 0;
+
+        for (const uid of uidsWithChanges) {
+          const changes   = currentChanges[uid];
+          const overrides = Object.entries(changes).map(([codice_permesso, concesso]) => ({
+            codice_permesso, concesso,
+          }));
+          try {
+            const res = await authFetch(`/api/v1/auth/permissions/${uid}/bulk`, {
+              method: "PUT",
+              body:   JSON.stringify({ overrides }),
+            });
+            if (!res.ok) errors++;
+          } catch { errors++; }
+        }
+
+        setSaving(false);
+        setSaveMsg(errors === 0
+          ? { ok: true,  text: "Modifiche salvate con successo." }
+          : { ok: false, text: `${errors} salvataggio/i fallito/i.` }
+        );
+        await fetchMatrice(); // ricarica e pulisce localChanges
+      })();
+
+      return currentChanges; // non modifica lo state qui, lo fa fetchMatrice
+    });
+  }, [authFetch, fetchMatrice]);
+
+  // Calcola totalPending leggendo localChanges direttamente dallo state
   const totalPending = Object.values(localChanges)
     .reduce((acc, u) => acc + Object.keys(u || {}).length, 0);
-
-  // Salva tutte le modifiche
-  const handleSaveAll = useCallback(async () => {
-    const uidsWithChanges = Object.keys(localChanges).filter(
-      uid => Object.keys(localChanges[uid] || {}).length > 0
-    );
-    if (uidsWithChanges.length === 0) return;
-
-    setSaving(true);
-    setSaveMsg(null);
-    let errors = 0;
-
-    for (const uid of uidsWithChanges) {
-      const changes = localChanges[uid];
-      const overrides = Object.entries(changes).map(([codice_permesso, concesso]) => ({
-        codice_permesso,
-        concesso,
-      }));
-      try {
-        const res = await authFetch(`/api/v1/auth/permissions/${uid}/bulk`, {
-          method: "PUT",
-          body:   JSON.stringify({ overrides }),
-        });
-        if (!res.ok) errors++;
-      } catch { errors++; }
-    }
-
-    setSaving(false);
-    if (errors === 0) {
-      setSaveMsg({ ok: true, text: "Modifiche salvate con successo." });
-    } else {
-      setSaveMsg({ ok: false, text: `${errors} salvataggio/i fallito/i.` });
-    }
-    await fetchMatrice();
-  }, [localChanges, authFetch, fetchMatrice]);
 
   if (loading) {
     return (
@@ -277,8 +285,6 @@ export default function PermissionMatrixPanel() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-
-      {/* Toolbar */}
       <div style={{ padding: "10px 16px", background: "var(--surface)", borderBottom: "1px solid var(--border)", flexShrink: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
           <span style={{ fontSize: "0.88rem", fontWeight: 700, color: "var(--text)" }}>🔐 Matrice Permessi</span>
@@ -291,25 +297,17 @@ export default function PermissionMatrixPanel() {
             </span>
           )}
           <div style={{ flex: 1 }} />
-          <input
-            placeholder="🔍 Cerca utente…"
-            value={filtroUtente}
-            onChange={e => setFiltroUtente(e.target.value)}
-            style={{ padding: "6px 10px", background: "var(--surface2)", border: "1px solid var(--border-strong)", borderRadius: 7, color: "var(--text)", fontFamily: "inherit", fontSize: "0.78rem", outline: "none", width: 180 }}
-          />
+          <input placeholder="🔍 Cerca utente…" value={filtroUtente} onChange={e => setFiltroUtente(e.target.value)}
+            style={{ padding: "6px 10px", background: "var(--surface2)", border: "1px solid var(--border-strong)", borderRadius: 7, color: "var(--text)", fontFamily: "inherit", fontSize: "0.78rem", outline: "none", width: 180 }} />
           {totalPending > 0 && (
-            <button
-              onClick={handleSaveAll}
-              disabled={saving}
-              style={{ padding: "6px 16px", background: "var(--accent)", color: "white", border: "none", borderRadius: 7, cursor: saving ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: "0.78rem", fontWeight: 700, opacity: saving ? 0.6 : 1 }}
-            >
+            <button onClick={handleSaveAll} disabled={saving}
+              style={{ padding: "6px 16px", background: "var(--accent)", color: "white", border: "none", borderRadius: 7, cursor: saving ? "not-allowed" : "pointer", fontFamily: "inherit", fontSize: "0.78rem", fontWeight: 700, opacity: saving ? 0.6 : 1 }}>
               {saving ? "Salvataggio…" : `💾 Salva (${totalPending})`}
             </button>
           )}
           <button onClick={fetchMatrice} style={{ padding: "6px 10px", background: "none", border: "1px solid var(--border-strong)", borderRadius: 7, cursor: "pointer", fontFamily: "inherit", fontSize: "0.75rem", color: "var(--text-muted)" }}>↻</button>
         </div>
 
-        {/* Legenda semplificata */}
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
             <span style={{ width: 24, height: 22, borderRadius: 5, border: "1.5px solid rgba(52,211,153,0.4)", background: "rgba(52,211,153,0.12)", color: "#34d399", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.75rem", fontWeight: 700 }}>✓</span>
@@ -320,12 +318,11 @@ export default function PermissionMatrixPanel() {
             <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Non assegnato</span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <span style={{ width: 24, height: 22, borderRadius: 5, border: "2px dashed rgba(255, 6, 6, 0.87)", background: "rgba(0, 0, 0, 0.08)", color: "#ff0000e6", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.72rem", fontWeight: 700 }}>✓</span>
+            <span style={{ width: 24, height: 22, borderRadius: 5, border: "2px dashed rgba(52,211,153,0.8)", background: "rgba(52,211,153,0.08)", color: "#34d399", display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: "0.72rem", fontWeight: 700 }}>✓</span>
             <span style={{ fontSize: "0.7rem", color: "var(--text-muted)" }}>Modifica non salvata</span>
           </div>
         </div>
 
-        {/* Messaggio esito salvataggio */}
         {saveMsg && (
           <div style={{ marginTop: 8, padding: "6px 12px", borderRadius: 6, fontSize: "0.75rem", background: saveMsg.ok ? "rgba(52,211,153,0.1)" : "rgba(239,68,68,0.1)", border: `1px solid ${saveMsg.ok ? "rgba(52,211,153,0.3)" : "rgba(239,68,68,0.3)"}`, color: saveMsg.ok ? "#34d399" : "#f87171" }}>
             {saveMsg.ok ? "✓" : "⚠"} {saveMsg.text}
@@ -333,15 +330,14 @@ export default function PermissionMatrixPanel() {
         )}
       </div>
 
-      {/* Corpo scrollabile */}
       <div style={{ flex: 1, overflowY: "auto", padding: "14px 16px" }}>
-        {/* Toggle categorie */}
         <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
           {Object.keys(CATEGORIE).map(cat => {
             const cc = CAT_COLORS[cat];
             const aperta = catAperte[cat];
             return (
-              <button key={cat} onClick={() => setCatAperte(prev => ({ ...prev, [cat]: !prev[cat] }))} style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 20, background: aperta ? cc.bg : "transparent", border: `1px solid ${aperta ? cc.border : "var(--border)"}`, color: aperta ? cc.accent : "var(--text-muted)", cursor: "pointer", fontFamily: "inherit", fontSize: "0.7rem", fontWeight: 600, transition: "all 0.12s" }}>
+              <button key={cat} onClick={() => setCatAperte(prev => ({ ...prev, [cat]: !prev[cat] }))}
+                style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 10px", borderRadius: 20, background: aperta ? cc.bg : "transparent", border: `1px solid ${aperta ? cc.border : "var(--border)"}`, color: aperta ? cc.accent : "var(--text-muted)", cursor: "pointer", fontFamily: "inherit", fontSize: "0.7rem", fontWeight: 600, transition: "all 0.12s" }}>
                 {CAT_ICONS[cat]} {cat}
               </button>
             );

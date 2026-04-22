@@ -1,23 +1,23 @@
 # app/api/v1/chat.py
+# FIX: link pagina canonico da anchor_link, dedup migliorato
+import re
 import logging
 from fastapi import APIRouter, HTTPException, Request, status, Depends
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.services.auth_service import get_current_user   # ← NUOVO
+from app.services.auth_service import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(redirect_slashes=True)
 
 
-# ── Modelli ──────────────────────────────────────────────────
 class ChatRequest(BaseModel):
     question:   str
     session_id: str
     debug:      bool = False
 
 
-# ── Helper ───────────────────────────────────────────────────
 def _normalize_page(raw) -> str:
     if raw is None:
         return ""
@@ -29,41 +29,55 @@ def _normalize_page(raw) -> str:
 
 
 def _extract_sources(source_docs) -> list:
+    """
+    Estrae sorgenti dai chunk recuperati.
+
+    Priorità per la pagina:
+      1. anchor_link (#page=N) — costruito dal chunker dalla mappa pagine reale del PDF
+      2. metadata["pagina"] come fallback
+
+    Il link finale è sempre l'anchor_link COMPLETO (già include #page=N).
+    Non ricostruire il link nel frontend — usare direttamente src.link.
+    """
     sources   = []
     seen_keys = set()
 
     for d in source_docs:
         title      = d.metadata.get("titolo_documento", "N/D")
-        page_raw   = d.metadata.get("pagina", "")
-        page       = _normalize_page(page_raw)
         link       = d.metadata.get("anchor_link", "")
         breadcrumb = d.metadata.get("breadcrumb", "Generale")
 
-        if not page and link:
-            import re
+        # Pagina estratta dall'anchor_link (fonte canonica)
+        page = ""
+        if link:
             m = re.search(r'#page=(\d+)', link)
             if m:
                 page = m.group(1)
 
-        key = (title, page)
+        # Fallback a metadata["pagina"] se anchor_link non ha #page
+        if not page:
+            page = _normalize_page(d.metadata.get("pagina", ""))
+
+        # Deduplication: stessa sorgente se stessa coppia (titolo, pagina)
+        # Se pagina è vuota, dedup solo per titolo+breadcrumb (evita duplicati senza pagina)
+        key = (title, page) if page else (title, breadcrumb)
         if key not in seen_keys:
             seen_keys.add(key)
             sources.append({
                 "title":      title,
                 "page":       page,
-                "link":       link,
+                "link":       link,   # link COMPLETO con #page già incluso
                 "breadcrumb": breadcrumb,
             })
 
     return sources
 
 
-# ── Chat ──────────────────────────────────────────────────────
 @router.post("/chat")
 async def chat_endpoint(
     request: ChatRequest,
     fastapi_req: Request,
-    current_user=Depends(get_current_user),   # ← NUOVO: richiede token valido
+    current_user=Depends(get_current_user),
 ):
     try:
         chain = fastapi_req.app.state.rag_chain
@@ -135,12 +149,11 @@ async def chat_endpoint(
         )
 
 
-# ── Reset sessione ────────────────────────────────────────────
 @router.post("/chat/reset")
 async def reset_chat(
     request: ChatRequest,
     fastapi_req: Request,
-    current_user=Depends(get_current_user),   # ← NUOVO
+    current_user=Depends(get_current_user),
 ):
     store      = fastapi_req.app.state.chat_store
     session_id = request.session_id
@@ -150,11 +163,10 @@ async def reset_chat(
     return {"status": "info", "message": "Nessuna cronologia attiva."}
 
 
-# ── Reload SearchService ──────────────────────────────────────
 @router.post("/search/reload")
 async def reload_search_service(
     fastapi_req: Request,
-    current_user=Depends(get_current_user),   # ← NUOVO
+    current_user=Depends(get_current_user),
 ):
     try:
         search_service = fastapi_req.app.state.search_service
