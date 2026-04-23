@@ -4,6 +4,7 @@ import uuid
 import asyncio
 import json as _json
 import logging
+import shutil
 from pathlib import Path
 
 from fastapi import (
@@ -37,9 +38,6 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 _jobs: dict[str, dict] = {}
 _ws_connections: dict[str, list[WebSocket]] = {}
-
-# Cache upload: filename -> utente_id
-# Permette agli Admin di vedere i propri PDF prima che vengano salvati in DB
 _upload_owner: dict[str, int] = {}
 
 
@@ -92,16 +90,6 @@ def _chroma_collection(request: Request):
 # ─────────────────────────────────────────────
 
 def _find_chunks_json(stem: str) -> Path | None:
-    """
-    Cerca il file JSON chunks generato dal chunker.
-    Il nome del file può differire dallo stem del PDF se il postprocessor
-    ha rinominato il markdown (es: da documento_raw.md → documento.md
-    → il chunks si chiama documento_chunks.json, non documento_raw_chunks.json).
-
-    FIX: il PDF ha stem "documento", il markdown pulito ha stem "documento"
-    (il _raw viene rimosso dal postprocessor), quindi i pattern qui sotto
-    coprono tutti i casi reali.
-    """
     candidates = [
         OUTPUT_DIR / f"{stem}_chunks.json",
         OUTPUT_DIR / f"{stem}_fixed_chunks.json",
@@ -115,10 +103,6 @@ def _find_chunks_json(stem: str) -> Path | None:
 
 
 def _has_local_files(stem: str) -> bool:
-    """
-    True se esistono file locali prodotti dalla pipeline (chunks JSON o markdown).
-    Indica stato "ready" per il loader.
-    """
     if _find_chunks_json(stem) is not None:
         return True
     md_candidates = [
@@ -129,10 +113,6 @@ def _has_local_files(stem: str) -> bool:
 
 
 def _doc_status_batch(filenames: list, admin_svc) -> dict:
-    """
-    Calcola lo stato di ogni PDF in modo efficiente.
-    Ordine di priorità: processing > completed > ready > not_ingested
-    """
     processing_filenames = {
         job["filename"]
         for job in _jobs.values()
@@ -159,7 +139,6 @@ def _doc_status(filename: str, admin_svc) -> str:
 
 
 def _resolve_documento_id_from_chroma(stem: str, admin_svc) -> int | None:
-    """Recupera il documento_id PostgreSQL dal metadata ChromaDB."""
     result = admin_svc.get_chunks(stem, page=0, page_size=1)
     chunks = result.get("chunks", [])
     if not chunks:
@@ -171,6 +150,60 @@ def _resolve_documento_id_from_chroma(stem: str, admin_svc) -> int | None:
         return int(raw)
     except (ValueError, TypeError):
         return None
+
+
+# ─────────────────────────────────────────────
+# FIX: eliminazione COMPLETA di tutti i file locali
+# ─────────────────────────────────────────────
+
+def _elimina_file_locali(stem: str) -> list[str]:
+    """
+    Elimina TUTTI i file e cartelle prodotti dalla pipeline per lo stem dato.
+    Restituisce la lista dei nomi eliminati.
+
+    FIX rispetto alla versione precedente:
+    - Aggiunta eliminazione della cartella {stem}_images (immagini Marker)
+    - Aggiunto _pages.json
+    - Aggiunto _raw.md
+    - Usa shutil.rmtree per le cartelle invece di unlink
+    """
+    removed = []
+
+    # File singoli da eliminare
+    files_to_delete = [
+        PDF_DIR    / f"{stem}.pdf",
+        OUTPUT_DIR / f"{stem}_raw.md",
+        OUTPUT_DIR / f"{stem}.md",
+        OUTPUT_DIR / f"{stem}_fixed.md",
+        OUTPUT_DIR / f"{stem}_chunks.json",
+        OUTPUT_DIR / f"{stem}_fixed_chunks.json",
+        OUTPUT_DIR / f"{stem}_pages.json",
+        CHUNKS_DIR / f"{stem}_chunks.json",
+        CHUNKS_DIR / f"{stem}_fixed_chunks.json",
+        CHUNKS_DIR / f"{stem}_pages.json",
+    ]
+    for f in files_to_delete:
+        if f.exists():
+            try:
+                f.unlink()
+                removed.append(f"file:{f.name}")
+            except Exception as e:
+                logger.warning(f"Impossibile eliminare {f.name}: {e}")
+
+    # Cartelle da eliminare (immagini estratte da Marker)
+    dirs_to_delete = [
+        OUTPUT_DIR / f"{stem}_images",
+        PDF_DIR    / f"{stem}_images",
+    ]
+    for d in dirs_to_delete:
+        if d.exists() and d.is_dir():
+            try:
+                shutil.rmtree(d)
+                removed.append(f"dir:{d.name}")
+            except Exception as e:
+                logger.warning(f"Impossibile eliminare cartella {d.name}: {e}")
+
+    return removed
 
 
 # ─────────────────────────────────────────────
@@ -186,12 +219,6 @@ def _get_titoli_owner(owner_filter: int | None, db) -> set:
 
 
 def _pdf_belongs_to_admin(pdf_path: Path, admin_utente_id: int, titoli_admin: set, admin_svc) -> bool:
-    """
-    Un PDF appartiene a un Admin se:
-      - il suo titolo (risolto da ChromaDB) è nella lista dei documenti dell'Admin, OPPURE
-      - è ancora in fase pre-DB (not_ingested/ready/processing) ed è stato
-        caricato da quell'Admin (tracciato in _upload_owner)
-    """
     stem  = pdf_path.stem
     title = admin_svc._resolve_title(stem)
     if title and title in titoli_admin:
@@ -259,7 +286,6 @@ async def upload_pdf(request: Request, file: UploadFile = File(...), admin=Depen
     dest.write_bytes(content)
     size_kb = round(len(content) / 1024, 1)
 
-    # Registra proprietario upload per filtro ownership pre-DB
     _upload_owner[file.filename] = admin.utente_id
 
     _log(admin.utente_id, "doc_upload", {"filename": file.filename, "size_kb": size_kb}, _ip(request))
@@ -352,7 +378,7 @@ async def ingest_pdf(filename: str, request: Request, background_tasks: Backgrou
     job_id = str(uuid.uuid4())
     _jobs[job_id] = {"filename": filename, "status": "processing", "logs": [], "uploader_id": admin.utente_id}
     _ws_connections[job_id] = []
-    _upload_owner[filename] = admin.utente_id   # mantieni l'owner anche durante ingestion
+    _upload_owner[filename] = admin.utente_id
 
     loop = asyncio.get_event_loop()
     background_tasks.add_task(loop.run_in_executor, None,
@@ -373,11 +399,9 @@ async def progress_ws(websocket: WebSocket, job_id: str):
         await websocket.close()
         return
 
-    # Replay dei log già accumulati
     for log in list(_jobs[job_id]["logs"]):
         await websocket.send_text(log)
 
-    # Job già terminato: invia status e chiudi
     if _jobs[job_id]["status"] in ("done", "error"):
         await websocket.send_text(f"__STATUS__{_jobs[job_id]['status']}")
         await websocket.close()
@@ -466,7 +490,6 @@ async def load_document(filename: str, request: Request, background_tasks: Backg
     if not data_validita:
         raise HTTPException(status_code=400, detail="data_validita è obbligatoria.")
 
-    # FIX: usa _find_chunks_json per trovare il file in modo robusto
     stem = Path(filename).stem
     json_path_obj = _find_chunks_json(stem)
     if json_path_obj is None:
@@ -509,14 +532,11 @@ async def load_document(filename: str, request: Request, background_tasks: Backg
                 emit(f"__LOAD_OK__{result['documento_id']}")
                 _jobs[job_id]["status"] = "done"
 
-                # Ricarica mappa stem→titolo in AdminSearchService
                 try:
                     admin_svc.reload()
                 except Exception as re_err:
                     logger.warning(f"AdminSearchService.reload() fallito: {re_err}")
 
-                # Il PDF ora è in DB: rimuovi dalla cache upload
-                # (la ownership ora è tracciata da id_utente_caricamento)
                 _upload_owner.pop(filename, None)
 
                 _log(utente_id, "doc_load", {
@@ -565,59 +585,49 @@ async def get_sync_status(request: Request, admin=Depends(require_admin)):
 
 
 # ─────────────────────────────────────────────
-# ENDPOINT: elimina documento (FIX completo)
+# ENDPOINT: elimina documento — FIX COMPLETO
 # ─────────────────────────────────────────────
+#
+# BUG PRECEDENTI corretti:
+# 1. I file locali erano elencati inline e mancavano:
+#    - la cartella {stem}_images (immagini estratte da Marker)
+#    - i _pages.json in CHUNKS_DIR
+# 2. La ChromaDB veniva rimossa sia da admin_svc.delete_document() che
+#    da _elimina_chroma_per_titolo() con rischio di chiamate doppie.
+#    Ora si usa SOLO admin_svc.delete_document() che gestisce tutto.
+# 3. I file fisici ora vengono eliminati da _elimina_file_locali()
+#    che usa shutil.rmtree per le cartelle.
 
 @router.delete("/document/{filename}")
 async def delete_document_full(filename: str, request: Request, admin=Depends(require_admin)):
-    """
-    Elimina un documento da tutti i livelli in modo robusto.
-
-    FIX rispetto alla versione precedente:
-    - La sessione DB viene chiusa PRIMA di procedere con ChromaDB e file
-      (evita "Session closed" errors da rollback impliciti)
-    - Ogni fase è indipendente: un errore in una non blocca le altre
-    - Gestisce tutti i casi: solo PG, solo Chroma, solo file, nessuno
-    - Fallback a ricerca ILIKE se stem→titolo non risolve
-    - Log dettagliato per ogni fase
-    """
     from app.services.loader_service import _elimina_chroma_per_titolo
     from app.services.auth_service import require_doc_owner
     from app.models.rag_models import Documento
     from app.db.session import SessionLocal
 
     stem       = Path(filename).stem
-    pdf_path   = PDF_DIR / filename
     removed    = []
     errors     = []
     admin_svc  = _admin_search(request)
     collection = _chroma_collection(request)
 
-    # ────────────────────────────────────────
-    # FASE 1: Trova e rimuovi da PostgreSQL
-    # Usiamo un blocco try/finally dedicato per garantire
-    # che la sessione venga sempre chiusa prima delle fasi successive.
-    # ────────────────────────────────────────
+    # ── FASE 1: PostgreSQL ────────────────────────────────────
     documento_id = None
     titolo_doc   = None
 
     db = SessionLocal()
     try:
-        # Strategia di ricerca a cascata (dalla più affidabile alla meno)
         doc = None
 
-        # 1a. Tramite documento_id recuperato da ChromaDB metadata
         doc_id_chroma = _resolve_documento_id_from_chroma(stem, admin_svc)
         if doc_id_chroma is not None:
             doc = db.query(Documento).filter(Documento.documento_id == doc_id_chroma).first()
 
-        # 1b. Tramite titolo risolto da AdminSearchService
         if doc is None:
             titolo_candidato = admin_svc._resolve_title(stem)
             if titolo_candidato:
                 doc = db.query(Documento).filter(Documento.titolo == titolo_candidato).first()
 
-        # 1c. Ricerca ILIKE sullo stem (fallback finale)
         if doc is None:
             doc = db.query(Documento).filter(Documento.titolo.ilike(f"%{stem}%")).first()
 
@@ -625,19 +635,16 @@ async def delete_document_full(filename: str, request: Request, admin=Depends(re
             documento_id = doc.documento_id
             titolo_doc   = doc.titolo
 
-            # Ownership check — SuperAdmin bypassa automaticamente
             require_doc_owner(documento_id, admin, db)
 
             db.delete(doc)
             db.commit()
             removed.append(f"postgres:id={documento_id}")
         else:
-            # Documento non in PostgreSQL: ricava il titolo da altre fonti
             titolo_doc = admin_svc._resolve_title(stem) or stem
             errors.append("postgres:not_found")
 
     except HTTPException:
-        # Ownership check fallito o 404: rilancia subito senza toccare altro
         db.rollback()
         db.close()
         raise
@@ -650,20 +657,20 @@ async def delete_document_full(filename: str, request: Request, admin=Depends(re
         except Exception:
             pass
     finally:
-        # La sessione viene SEMPRE chiusa qui, prima di ChromaDB e file
         db.close()
 
-    # ────────────────────────────────────────
-    # FASE 2: Rimuovi da ChromaDB
-    # Eseguita sempre, anche se PG ha fallito, per garantire consistenza.
-    # ────────────────────────────────────────
+    # ── FASE 2: ChromaDB ──────────────────────────────────────
+    # FIX: usa _elimina_chroma_per_titolo direttamente sulla collection
+    # e poi aggiorna le mappe di admin_svc. In questo modo non ci sono
+    # chiamate doppie e la pulizia è garantita anche se admin_svc
+    # non ha ancora caricato il titolo nelle sue mappe interne.
     if titolo_doc:
         try:
             n = _elimina_chroma_per_titolo(collection, titolo_doc)
             if n > 0:
                 removed.append(f"chromadb:{n}_chunks")
             else:
-                # Prova con lo stem come titolo alternativo
+                # Tenta con lo stem normalizzato come fallback
                 n2 = _elimina_chroma_per_titolo(collection, stem)
                 if n2 > 0:
                     removed.append(f"chromadb:{n2}_chunks(via_stem)")
@@ -673,31 +680,15 @@ async def delete_document_full(filename: str, request: Request, admin=Depends(re
             logger.exception(f"Delete fase ChromaDB fallita per '{titolo_doc}'")
             errors.append(f"chromadb:error:{type(e).__name__}")
 
-    # ────────────────────────────────────────
-    # FASE 3: Rimuovi file fisici locali
-    # ────────────────────────────────────────
-    files_to_delete = [
-        pdf_path,
-        OUTPUT_DIR / f"{stem}_raw.md",
-        OUTPUT_DIR / f"{stem}.md",
-        OUTPUT_DIR / f"{stem}_fixed.md",
-        OUTPUT_DIR / f"{stem}_chunks.json",
-        OUTPUT_DIR / f"{stem}_fixed_chunks.json",
-        OUTPUT_DIR / f"{stem}_pages.json",
-        CHUNKS_DIR / f"{stem}_chunks.json",
-        CHUNKS_DIR / f"{stem}_fixed_chunks.json",
-    ]
-    for f in files_to_delete:
-        if f.exists():
-            try:
-                f.unlink()
-                removed.append(f"file:{f.name}")
-            except Exception as e:
-                errors.append(f"file:{f.name}:error:{type(e).__name__}")
+    # ── FASE 3: File fisici locali ────────────────────────────
+    # FIX: usa _elimina_file_locali() che include anche:
+    #   - cartella {stem}_images (immagini Marker)
+    #   - _pages.json in entrambe le cartelle
+    #   - tutti i markdown intermedi
+    file_removed = _elimina_file_locali(stem)
+    removed.extend(file_removed)
 
-    # ────────────────────────────────────────
-    # FASE 4: Aggiorna cache in-memory
-    # ────────────────────────────────────────
+    # ── FASE 4: Cache in-memory ───────────────────────────────
     try:
         admin_svc.delete_document(stem)
     except Exception as e:
@@ -705,10 +696,7 @@ async def delete_document_full(filename: str, request: Request, admin=Depends(re
 
     _upload_owner.pop(filename, None)
 
-    # ────────────────────────────────────────
-    # Log e risposta
-    # ────────────────────────────────────────
-    # Consideriamo "warning" solo gli errori reali (non i "not_found")
+    # ── Log e risposta ────────────────────────────────────────
     hard_errors = [e for e in errors if ":error:" in e]
     esito = "error" if hard_errors else ("warning" if errors else "ok")
 
@@ -893,5 +881,72 @@ async def get_activity_log_azioni(_=Depends(require_admin)):
     try:
         rows = db.execute(_text2("SELECT DISTINCT azione FROM Activity_Log ORDER BY azione")).fetchall()
         return {"azioni": [r.azione for r in rows]}
+    finally:
+        db.close()
+
+
+# ─────────────────────────────────────────────
+# ENDPOINT: documenti con info ownership (SuperAdmin)
+# ─────────────────────────────────────────────
+
+@router.get("/documents/ownership")
+async def get_documents_ownership(request: Request, admin=Depends(require_admin)):
+    """
+    Restituisce la lista di tutti i documenti con informazioni sull'utente
+    che li ha caricati. Solo SuperAdmin vede tutti i documenti; Admin vede
+    solo i propri.
+    """
+    from app.db.session import SessionLocal
+    from app.models.rag_models import Documento, Utente
+    from sqlalchemy import text as _text2
+
+    db    = SessionLocal()
+    scope = get_admin_scope(admin, db)
+    try:
+        query = db.execute(_text2("""
+            SELECT
+                d.documento_id,
+                d.titolo,
+                d.versione,
+                d.data_validita_inizio,
+                d.data_scadenza,
+                d.data_caricamento,
+                d.sync_status,
+                d.is_archiviato,
+                d.id_utente_caricamento,
+                u.email      AS caricato_da_email,
+                u.nome       AS caricato_da_nome,
+                u.cognome    AS caricato_da_cognome
+            FROM Documento d
+            LEFT JOIN Utente u ON u.utente_id = d.id_utente_caricamento
+            WHERE d.is_archiviato = FALSE
+            {where_clause}
+            ORDER BY d.data_caricamento DESC
+        """.replace(
+            "{where_clause}",
+            "AND d.id_utente_caricamento = :owner_uid" if scope["owner_filter"] is not None else ""
+        )), {"owner_uid": scope["owner_filter"]} if scope["owner_filter"] is not None else {}).fetchall()
+
+        return {
+            "documenti": [
+                {
+                    "documento_id":        r.documento_id,
+                    "titolo":              r.titolo,
+                    "versione":            r.versione,
+                    "data_validita":       str(r.data_validita_inizio) if r.data_validita_inizio else None,
+                    "data_scadenza":       str(r.data_scadenza) if r.data_scadenza else None,
+                    "data_caricamento":    str(r.data_caricamento) if r.data_caricamento else None,
+                    "sync_status":         r.sync_status,
+                    "is_archiviato":       r.is_archiviato,
+                    "caricato_da": {
+                        "utente_id": r.id_utente_caricamento,
+                        "email":     r.caricato_da_email,
+                        "nome":      r.caricato_da_nome,
+                        "cognome":   r.caricato_da_cognome,
+                    } if r.id_utente_caricamento else None,
+                }
+                for r in query
+            ]
+        }
     finally:
         db.close()

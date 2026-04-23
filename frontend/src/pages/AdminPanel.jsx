@@ -488,48 +488,180 @@ function LoaderPanel({ pdf, onLoaded, onStatusChange }) {
     </div>
   )
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// ISTRUZIONI DI INTEGRAZIONE
+// ─────────────────────────────────────────────────────────────────────────────
+// In AdminPanel.jsx, sostituisci l'intera funzione SyncPanel (dalla riga
+// "function SyncPanel()" fino alla sua parentesi graffa di chiusura)
+// con il codice qui sotto.
+//
+// Non serve modificare nient'altro nel file.
+// ─────────────────────────────────────────────────────────────────────────────
 
 function SyncPanel() {
-  const { authFetch } = useAuth()
-  const [docs, setDocs]       = useState([])
-  const [loading, setLoading] = useState(false)
+  const { authFetch, user: currentUser } = useAuth()
+  const isSuperAdmin = currentUser?.is_superadmin ?? false
+
+  const [docs,        setDocs]        = useState([])
+  const [ownerMap,    setOwnerMap]    = useState({})   // titolo → { nome, email }
+  const [loading,     setLoading]     = useState(false)
+  const [filterText,  setFilterText]  = useState("")
 
   const fetch_ = useCallback(async () => {
     setLoading(true)
     try {
-      const res  = await authFetch("/api/v1/admin/sync-status")
-      const data = await res.json()
-      setDocs(data.documenti || [])
+      // Fetch sync status (sempre)
+      const syncRes  = await authFetch("/api/v1/admin/sync-status")
+      const syncData = await syncRes.json()
+      setDocs(syncData.documenti || [])
+
+      // Fetch ownership solo per SuperAdmin
+      if (isSuperAdmin) {
+        const owRes  = await authFetch("/api/v1/admin/documents/ownership")
+        const owData = await owRes.json()
+        const map = {}
+        for (const d of owData.documenti || []) {
+          if (d.caricato_da) {
+            const nome = d.caricato_da.nome && d.caricato_da.cognome
+              ? `${d.caricato_da.nome} ${d.caricato_da.cognome}`
+              : d.caricato_da.email
+            map[d.titolo] = { nome, email: d.caricato_da.email }
+          }
+        }
+        setOwnerMap(map)
+      }
     } catch (e) { console.error(e) }
     finally { setLoading(false) }
-  }, [authFetch])
+  }, [authFetch, isSuperAdmin])
 
   useEffect(() => { fetch_() }, [fetch_])
 
+  // Filtraggio locale (testo libero su titolo o owner)
+  const filtered = filterText
+    ? docs.filter(d => {
+        const q = filterText.toLowerCase()
+        const owner = ownerMap[d.titolo]
+        return (
+          d.titolo.toLowerCase().includes(q) ||
+          (owner?.nome  || "").toLowerCase().includes(q) ||
+          (owner?.email || "").toLowerCase().includes(q)
+        )
+      })
+    : docs
+
   return (
     <div>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
-        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>{docs.length} documenti monitorati</span>
-        <button style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", color: "var(--accent)" }} onClick={fetch_}>↻ Aggiorna</button>
+      {/* Toolbar */}
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 8, flexWrap: "wrap" }}>
+        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>
+          {filtered.length}{filtered.length !== docs.length ? ` / ${docs.length}` : ""} documenti monitorati
+        </span>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {isSuperAdmin && (
+            <input
+              placeholder="🔍 Filtra titolo o admin…"
+              value={filterText}
+              onChange={e => setFilterText(e.target.value)}
+              style={{
+                padding: "5px 10px", background: "var(--surface2)",
+                border: "1px solid var(--border-strong)", borderRadius: 6,
+                color: "var(--text)", fontFamily: "inherit", fontSize: "0.75rem",
+                outline: "none", width: 200,
+              }}
+            />
+          )}
+          <button
+            style={{ background: "none", border: "none", cursor: "pointer", fontSize: "0.75rem", color: "var(--accent)" }}
+            onClick={fetch_}
+          >
+            ↻ Aggiorna
+          </button>
+        </div>
       </div>
-      {loading && <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", padding: 16 }}>Caricamento…</div>}
-      {!loading && docs.map((doc, i) => (
-        <div key={i} style={s.syncItem(doc.stato)}>
-          <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-            <div style={s.syncDot(doc.stato)} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.titolo}</div>
-              <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: 2 }}>{SYNC_LABEL[doc.stato] || doc.stato}</div>
-              <div style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>{doc.dettaglio}</div>
+
+      {/* Lista documenti */}
+      {loading && (
+        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", padding: 16 }}>
+          Caricamento…
+        </div>
+      )}
+
+      {!loading && filtered.map((doc, i) => {
+        const owner = isSuperAdmin ? ownerMap[doc.titolo] : null
+        return (
+          <div key={i} style={s.syncItem(doc.stato)}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <div style={s.syncDot(doc.stato)} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "var(--text)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {doc.titolo}
+                </div>
+                <div style={{ fontSize: "0.68rem", color: "var(--text-muted)", marginTop: 2 }}>
+                  {SYNC_LABEL[doc.stato] || doc.stato}
+                </div>
+                <div style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 2 }}>
+                  {doc.dettaglio}
+                </div>
+
+                {/* Riga owner — visibile solo al SuperAdmin */}
+                {isSuperAdmin && (
+                  <div style={{
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    marginTop: 5, padding: "2px 8px", borderRadius: 20,
+                    background: owner
+                      ? "rgba(139,92,246,0.10)"
+                      : "rgba(107,114,128,0.08)",
+                    border: owner
+                      ? "1px solid rgba(139,92,246,0.25)"
+                      : "1px solid var(--border)",
+                  }}>
+                    <span style={{ fontSize: "0.6rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+                      caricato da
+                    </span>
+                    {owner ? (
+                      <>
+                        {/* Mini avatar con iniziali */}
+                        <span style={{
+                          width: 16, height: 16, borderRadius: "50%",
+                          background: "rgba(139,92,246,0.2)",
+                          border: "1px solid rgba(139,92,246,0.35)",
+                          display: "inline-flex", alignItems: "center", justifyContent: "center",
+                          fontSize: "0.5rem", fontWeight: 700,
+                          color: "#a78bfa", flexShrink: 0,
+                          fontFamily: "'JetBrains Mono', monospace",
+                        }}>
+                          {owner.nome.slice(0, 2).toUpperCase()}
+                        </span>
+                        <span style={{
+                          fontSize: "0.65rem", fontWeight: 600,
+                          color: "#a78bfa",
+                          maxWidth: 160, overflow: "hidden",
+                          textOverflow: "ellipsis", whiteSpace: "nowrap",
+                        }} title={owner.email}>
+                          {owner.nome}
+                        </span>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", fontStyle: "italic" }}>
+                        Sistema / SuperAdmin
+                      </span>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
           </div>
+        )
+      })}
+
+      {!loading && filtered.length === 0 && (
+        <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", padding: 24 }}>
+          {filterText ? `Nessun risultato per "${filterText}"` : "Nessun documento trovato nei DB."}
         </div>
-      ))}
-      {!loading && docs.length === 0 && <div style={{ fontSize: "0.75rem", color: "var(--text-muted)", textAlign: "center", padding: 24 }}>Nessun documento trovato nei DB.</div>}
+      )}
     </div>
   )
 }
-
 function DeleteDialog({ filename, onConfirm, onCancel }) {
   return (
     <div style={s.overlay}>

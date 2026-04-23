@@ -1,16 +1,13 @@
-// // src/pages/AdminPage.jsx
-// // Layout admin rinnovato: navbar orizzontale con sezioni principali.
-// // Documenti | Utenti | Log | Permessi — ciascuna occupa l'intera area.
-
 // import { useState } from 'react'
 // import { useNavigate } from 'react-router-dom'
 // import { useAuth } from '../context/AuthContext'
-// import AdminPanel         from './AdminPanel'
-// import UserManagementPanel from './UserManagementPanel'
-// import ActivityLogPanel   from './ActivityLogPanel'
+// import AdminPanel            from './AdminPanel'
+// import UserManagementPanel   from './UserManagementPanel'
+// import ActivityLogPanel      from './ActivityLogPanel'
 // import PermissionMatrixPanel from './PermissionMatrixPanel'
+// import logo from '../assets/Logo Exprivia pulito.png'
 
-// // ─── Icone SVG inline leggere ─────────────────────────────────
+// // ─── Icone SVG inline ─────────────────────────────────────────
 // const Icon = {
 //   docs: (
 //     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
@@ -46,30 +43,22 @@
 //       <polyline points="15 18 9 12 15 6"/>
 //     </svg>
 //   ),
-//   bolt: (
-//     <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-//       <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-//     </svg>
-//   ),
 // }
 
 // // ─── Definizione sezioni ──────────────────────────────────────
-// // perm: permesso richiesto per vedere la tab (se null → sempre visibile)
 // const SECTIONS = [
-//   { id: 'docs',        label: 'Documenti',  icon: Icon.docs,        perm: 'tab_ingestion' },
-//   { id: 'users',       label: 'Utenti',     icon: Icon.users,       perm: 'tab_users' },
-//   { id: 'log',         label: 'Log',        icon: Icon.log,         perm: 'tab_log' },
-//   { id: 'permissions', label: 'Permessi',   icon: Icon.permissions, perm: 'tab_permissions' },
+//   { id: 'docs',        label: 'Documenti', icon: Icon.docs,        perm: 'tab_ingestion' },
+//   { id: 'users',       label: 'Utenti',    icon: Icon.users,       perm: 'tab_users' },
+//   { id: 'log',         label: 'Log',       icon: Icon.log,         perm: 'tab_log' },
+//   { id: 'permissions', label: 'Permessi',  icon: Icon.permissions, perm: 'tab_permissions' },
 // ]
 
 // export default function AdminPage() {
 //   const navigate = useNavigate()
 //   const { user, hasPermission } = useAuth()
 
-//   // Sezioni visibili filtrate per permesso
 //   const visibleSections = SECTIONS.filter(s => !s.perm || hasPermission(s.perm))
 
-//   // Tab attiva: la prima disponibile
 //   const [activeSection, setActiveSection] = useState(
 //     visibleSections[0]?.id ?? 'docs'
 //   )
@@ -84,52 +73,45 @@
 //       width: '100vw',
 //       background: 'var(--bg)',
 //       color: 'var(--text)',
-//       fontFamily: "'DM Sans', sans-serif",
+//       fontFamily: "'Plus Jakarta Sans', sans-serif",
 //       overflow: 'hidden',
 //     }}>
 
-//       {/* ══════════════════════════════════════
-//           TOPBAR
-//       ══════════════════════════════════════ */}
+//       {/* ══ TOPBAR ══ */}
 //       <header style={{
 //         display: 'flex',
 //         alignItems: 'center',
 //         padding: '0 20px',
 //         height: 54,
 //         background: 'var(--surface)',
-//         borderBottom: '1px solid var(--border)',
+//         borderBottom: '1px solid var(--border-strong)',
 //         flexShrink: 0,
 //         gap: 0,
 //         position: 'relative',
 //         zIndex: 20,
+//         boxShadow: 'var(--shadow-sm)',
 //       }}>
 
-//         {/* Brand */}
-//         <div style={{
-//           display: 'flex', alignItems: 'center', gap: 10,
-//           paddingRight: 24, borderRight: '1px solid var(--border)',
-//           marginRight: 8, flexShrink: 0,
+//         {/* Brand con logo Exprivia */}
+//         <div className="admin-topbar-left" style={{
+//           paddingRight: 20,
+//           borderRight: '1px solid var(--border-strong)',
+//           marginRight: 8,
+//           flexShrink: 0,
 //         }}>
-//           <div style={{
-//             width: 30, height: 30, borderRadius: 8,
-//             background: 'var(--accent-dim)',
-//             border: '1px solid var(--accent-glow)',
-//             display: 'flex', alignItems: 'center', justifyContent: 'center',
-//             color: 'var(--accent)',
+//           <img
+//             src={logo}
+//             alt="Exprivia"
+//             className="exprivia-logo-topbar"
+//           />
+//           <div className="admin-topbar-separator" />
+//           <span style={{
+//             fontSize: '0.84rem', fontWeight: 700,
+//             color: 'var(--text)', letterSpacing: '-0.01em',
 //           }}>
-//             {Icon.bolt}
-//           </div>
-//           <div>
-//             <div style={{ fontSize: '0.88rem', fontWeight: 700, color: 'var(--text)', lineHeight: 1.1 }}>
-//               Policy Navigator
-//             </div>
-//             <div style={{
-//               fontSize: '0.6rem', fontWeight: 600, letterSpacing: '0.1em',
-//               textTransform: 'uppercase', color: 'var(--accent)',
-//             }}>
-//               Admin
-//             </div>
-//           </div>
+//             Policy Navigator
+//           </span>
+//           <span className="admin-topbar-badge">Admin</span>
 //         </div>
 
 //         {/* Nav tabs */}
@@ -165,12 +147,12 @@
 //           })}
 //         </nav>
 
-//         {/* Right side: user + back btn */}
+//         {/* Right: user + back */}
 //         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, paddingLeft: 12 }}>
 //           {user && (
 //             <div style={{
 //               fontSize: '0.72rem', color: 'var(--text-muted)',
-//               fontFamily: "'DM Mono', monospace",
+//               fontFamily: "'JetBrains Mono', monospace",
 //               maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
 //             }}>
 //               {user.nome ? `${user.nome} ${user.cognome || ''}`.trim() : user.email}
@@ -178,44 +160,24 @@
 //           )}
 //           <button
 //             onClick={() => navigate('/')}
-//             style={{
-//               display: 'flex', alignItems: 'center', gap: 5,
-//               padding: '6px 12px',
-//               background: 'transparent',
-//               border: '1px solid var(--border-strong)',
-//               borderRadius: 'var(--radius-sm)',
-//               color: 'var(--text-muted)',
-//               fontFamily: 'inherit',
-//               fontSize: '0.78rem',
-//               cursor: 'pointer',
-//               transition: 'background 0.15s, color 0.15s',
-//             }}
-//             onMouseEnter={e => {
-//               e.currentTarget.style.background = 'var(--surface2)'
-//               e.currentTarget.style.color = 'var(--text)'
-//             }}
-//             onMouseLeave={e => {
-//               e.currentTarget.style.background = 'transparent'
-//               e.currentTarget.style.color = 'var(--text-muted)'
-//             }}
+//             className="back-to-chat-btn"
+//             style={{ display: 'flex', alignItems: 'center', gap: 5 }}
 //           >
 //             {Icon.back} Chat
 //           </button>
 //         </div>
 //       </header>
 
-//       {/* ══════════════════════════════════════
-//           BREADCRUMB / SECTION HEADER
-//       ══════════════════════════════════════ */}
+//       {/* ══ BREADCRUMB ══ */}
 //       <div style={{
 //         display: 'flex', alignItems: 'center', gap: 8,
 //         padding: '0 20px',
-//         height: 36,
+//         height: 34,
 //         background: 'var(--surface2)',
 //         borderBottom: '1px solid var(--border)',
 //         flexShrink: 0,
 //       }}>
-//         <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: "'DM Mono', monospace" }}>
+//         <span style={{ fontSize: '0.65rem', color: 'var(--text-muted)', fontFamily: "'JetBrains Mono', monospace" }}>
 //           admin
 //         </span>
 //         <span style={{ fontSize: '0.65rem', color: 'var(--border-strong)' }}>›</span>
@@ -224,39 +186,37 @@
 //         </span>
 //       </div>
 
-//       {/* ══════════════════════════════════════
-//           CONTENT AREA
-//       ══════════════════════════════════════ */}
+//       {/* ══ CONTENT AREA ══ */}
 //       <main style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
 
-//         {/* Documenti — mantiene il layout esistente a 3 colonne */}
+//         {/* Documenti */}
 //         <div style={{
 //           display: activeSection === 'docs' ? 'flex' : 'none',
-//           flex: 1,  
+//           flex: 1,
 //           overflow: 'hidden',
-//           minHeight: 0,   // ← aggiunta critica
-//           height: '100%', // ← altezza esplicita
+//           minHeight: 0,
+//           height: '100%',
 //         }}>
 //           <AdminPanel />
 //         </div>
 
 //         {/* Utenti */}
 //         {activeSection === 'users' && (
-//           <FullPageSection title="Gestione utenti">
+//           <FullPageSection>
 //             <UserManagementPanel />
 //           </FullPageSection>
 //         )}
 
 //         {/* Log */}
 //         {activeSection === 'log' && (
-//           <FullPageSection title="Activity Log" noPadding>
+//           <FullPageSection noPadding>
 //             <ActivityLogPanel />
 //           </FullPageSection>
 //         )}
 
 //         {/* Permessi */}
 //         {activeSection === 'permissions' && (
-//           <FullPageSection title="Matrice permessi" noPadding>
+//           <FullPageSection noPadding>
 //             <PermissionMatrixPanel />
 //           </FullPageSection>
 //         )}
@@ -265,8 +225,8 @@
 //   )
 // }
 
-// // ─── Wrapper generico per sezioni a pagina piena ──────────────
-// function FullPageSection({ title, children, noPadding = false }) {
+// // ─── Wrapper sezioni a pagina piena ────────────────────────────
+// function FullPageSection({ children, noPadding = false }) {
 //   return (
 //     <div style={{
 //       display: 'flex',
@@ -289,7 +249,8 @@
 // }
 
 
-
+// src/pages/AdminPage.jsx
+// Aggiunta tab "Ownership" visibile solo al SuperAdmin.
 
 // src/pages/AdminPage.jsx
 // Layout admin: navbar orizzontale con logo Exprivia in topbar.

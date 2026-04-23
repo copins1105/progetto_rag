@@ -1,30 +1,34 @@
 // src/context/AuthContext.jsx
 //
-// FIX REFRESH TOKEN CON HTTPS/PORT-FORWARDING:
-// Con tunnel (devtunnels, ngrok) il frontend è su un sottodominio diverso
-// dal backend → il browser tratta le richieste come cross-site e NON invia
-// cookie con SameSite=Strict. Il cookie refresh_token non arriva al server
-// → /refresh risponde 401 → attemptRefresh fallisce → utente viene sloggato.
+// FIX TOKEN SCADUTO — comportamento corretto:
 //
-// Fix applicati:
-// 1. API_URL letta da variabile d'ambiente VITE_API_URL (vedi .env.local)
-//    così frontend e backend puntano sempre allo stesso dominio/porta corretti.
-// 2. attemptRefresh non chiama setToken(null)/setUser(null)/setPermissions([])
-//    su ogni 401 — lo fa solo dopo aver esaurito i retry, evitando logout
-//    prematuri per errori di rete transitori.
-// 3. authFetch non rilancia immediatamente su 401: prima prova il refresh,
-//    poi riprova la richiesta originale con il nuovo token.
+// PROBLEMA PRECEDENTE:
+// attemptRefresh() nel blocco catch (errore di rete) chiamava:
+//   setToken(null); setUser(null); setPermissions([]);
+// Questo causava il LOGOUT dell'utente anche quando il backend era
+// temporaneamente irraggiungibile (es. restart server, rete instabile).
+// L'utente veniva sloggato senza motivo e doveva rifare il login.
+//
+// FIX APPLICATO:
+// - Errore di RETE (catch) → NON slogga, mantiene lo stato corrente.
+//   Il JWT scadrà naturalmente dopo ACCESS_TOKEN_MINUTES. L'utente
+//   riceverà un errore sulla prossima chiamata API ma non verrà sloggato.
+// - Risposta HTTP 401 dal server (res.ok === false) → slogga correttamente,
+//   perché significa che il refresh token è scaduto o revocato.
+// - Risposta HTTP 4xx/5xx diversa da 401 → NON slogga (errore server temporaneo).
+//
+// COMPORTAMENTO RISULTANTE:
+// - Token JWT scaduto + backend online → refresh automatico trasparente ✓
+// - Token JWT scaduto + backend offline → l'utente rimane loggato,
+//   le chiamate API falliscono con errore di rete ma senza logout ✓
+// - Refresh token scaduto/revocato → logout corretto ✓
+// - Sessione "logout-all" (cambio password) → logout corretto ✓
 
 import {
   createContext, useContext, useState,
   useCallback, useEffect, useRef
 } from "react";
 
-// FIX: usa variabile d'ambiente per supportare port-forwarding/tunnel.
-// In sviluppo locale: crea frontend/.env.local con:
-//   VITE_API_URL=https://127.0.0.1:8080
-// Con devtunnels: VITE_API_URL=https://[tuo-id]-8080.euw.devtunnels.ms
-// La variabile deve puntare al backend, non al frontend.
 const API = import.meta.env.VITE_API_URL || "https://127.0.0.1:8080";
 
 const AuthContext = createContext(null);
@@ -46,10 +50,7 @@ export function AuthProvider({ children }) {
   }, [permissions]);
 
   // ── Refresh token ────────────────────────────────────────
-  // FIX: la funzione ora distingue tra "refresh fallito per cookie mancante"
-  // (cross-origin → non slogga subito, potrebbe essere problema transitorio)
-  // e "refresh fallito per token scaduto/revocato" (slogga correttamente).
-  // Il flag isRefreshing.current evita chiamate parallele duplicate.
+  // FIX: distingue tra errore di rete (non slogga) e 401 (slogga).
   const attemptRefresh = useCallback(async () => {
     if (isRefreshing.current) return refreshPromise.current;
 
@@ -58,15 +59,20 @@ export function AuthProvider({ children }) {
       try {
         const res = await fetch(`${API}/api/v1/auth/refresh`, {
           method:      "POST",
-          credentials: "include",  // fondamentale per inviare il cookie
+          credentials: "include",
         });
 
-        if (!res.ok) {
-          // 401 = token scaduto o cookie non ricevuto
-          // Puliamo lo stato solo se avevamo un token (sessione attiva)
+        if (res.status === 401) {
+          // Refresh token scaduto o revocato → logout corretto
           setToken(null);
           setUser(null);
           setPermissions([]);
+          return null;
+        }
+
+        if (!res.ok) {
+          // Altro errore HTTP (5xx, ecc.) → non slogga, errore temporaneo del server
+          // Il token corrente rimane valido fino alla sua scadenza naturale
           return null;
         }
 
@@ -76,13 +82,14 @@ export function AuthProvider({ children }) {
           setPermissions(data.permissions);
         }
         return data.access_token;
+
       } catch {
-        // Errore di rete: non slogghiamo per evitare logout su disconnessioni
-        // temporanee. Il token JWT scadrà naturalmente (ACCESS_TOKEN_MINUTES).
-        setToken(null);
-        setUser(null);
-        setPermissions([]);
+        // FIX PRINCIPALE: errore di RETE (backend irraggiungibile, timeout, ecc.)
+        // → NON slogghiamo l'utente. Il JWT corrente rimane nello stato.
+        // Le singole chiamate API restituiranno errori di rete che il componente
+        // può gestire localmente, ma l'utente NON viene disconnesso.
         return null;
+
       } finally {
         isRefreshing.current   = false;
         refreshPromise.current = null;
@@ -156,8 +163,11 @@ export function AuthProvider({ children }) {
   }, []);
 
   // ── authFetch — wrapper con refresh automatico ───────────
-  // FIX: gestisce correttamente HTTPS con certificati self-signed
-  // e richieste cross-origin con credentials: "include".
+  // FIX: su 401, tenta il refresh. Se il refresh restituisce null
+  // per errore di RETE (non 401), non rilanciamo "Sessione scaduta"
+  // ma usiamo il token corrente per un altro tentativo.
+  // Solo se il secondo tentativo ritorna 401 allora trattiamo come
+  // sessione scaduta.
   const authFetch = useCallback(async (url, options = {}) => {
     const fullUrl    = url.startsWith("http") ? url : `${API}${url}`;
     const isFormData = options.body instanceof FormData;
@@ -180,12 +190,27 @@ export function AuthProvider({ children }) {
     let res = await makeRequest(token);
 
     if (res.status === 401) {
+      // Token scaduto → tenta refresh
       const newToken = await attemptRefresh();
-      if (!newToken) {
-        throw new Error("Sessione scaduta. Effettua nuovamente il login.");
+
+      if (newToken) {
+        // Refresh riuscito → aggiorna profilo e riprova la richiesta
+        await fetchMe(newToken);
+        res = await makeRequest(newToken);
+      } else {
+        // FIX: il refresh potrebbe aver fallito per rete (newToken = null)
+        // senza aver sloggato l'utente. Riprova con il token corrente
+        // (potrebbe essere ancora valido se il 401 era un glitch).
+        // Se fallisce di nuovo, rilancia l'errore.
+        res = await makeRequest(token);
+        if (res.status === 401) {
+          // Ora è definitivamente scaduto → logout
+          setToken(null);
+          setUser(null);
+          setPermissions([]);
+          throw new Error("Sessione scaduta. Effettua nuovamente il login.");
+        }
       }
-      await fetchMe(newToken);
-      res = await makeRequest(newToken);
     }
 
     return res;
