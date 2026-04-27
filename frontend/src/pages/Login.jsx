@@ -1,4 +1,3 @@
-// // src/pages/Login.jsx
 // import { useState } from "react";
 // import { useAuth } from "../context/AuthContext";
 // import "../App.css";
@@ -23,7 +22,6 @@
 //     setLoading(true);
 //     try {
 //       await login(email.trim(), password);
-//       // Login OK → AuthContext aggiorna `user` → App.jsx mostra la chat
 //     } catch (err) {
 //       setError(err.message || "Credenziali non valide.");
 //     } finally {
@@ -34,7 +32,17 @@
 //   return (
 //     <div className="login-wrapper">
 //       <div className="login-box">
-//         <div style={{ fontSize: "1.6rem", marginBottom: "8px" }}>⚡</div>
+
+//         {/* Logo Exprivia centrato in cima alla card */}
+//         <div className="login-logo-area">
+//           <img
+//             src={logo}
+//             alt="Exprivia"
+//             className="exprivia-logo-login"
+//           />
+//           <div className="login-logo-divider" />
+//         </div>
+
 //         <h2>Policy Navigator</h2>
 //         <p className="login-subtitle">Accedi per consultare le policy aziendali</p>
 
@@ -58,16 +66,15 @@
 //             required
 //           />
 
-//           {/* Messaggio errore */}
 //           {error && (
 //             <div style={{
-//               background: "rgba(239,68,68,0.1)",
-//               border: "1px solid rgba(239,68,68,0.3)",
+//               background: "var(--red-dim)",
+//               border: "1px solid rgba(224,90,90,0.30)",
 //               borderRadius: "6px",
 //               padding: "9px 12px",
 //               marginBottom: "10px",
 //               fontSize: "0.8rem",
-//               color: "#f87171",
+//               color: "var(--red)",
 //               display: "flex",
 //               alignItems: "center",
 //               gap: "7px",
@@ -84,12 +91,18 @@
 //     </div>
 //   );
 // }
+
 // src/pages/Login.jsx
+// ADDED: robot logo icon next to "Policy Navigator" heading, theme-aware
+
+// src/pages/Login.jsx
+// ADDED: robot logo icon next to "Policy Navigator" heading, theme-aware
 
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import "../App.css";
 import logo from "../assets/Logo Exprivia pulito.png";
+import robotLogo from "../assets/Logo.png";
 
 export default function Login() {
   const { login } = useAuth();
@@ -131,7 +144,23 @@ export default function Login() {
           <div className="login-logo-divider" />
         </div>
 
-        <h2>Policy Navigator</h2>
+        {/* Titolo con icona robot affiancata */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: '12px',
+          marginTop: '-46px',
+          marginBottom: '4px',
+        }}>
+          <img
+            src={robotLogo}
+            alt="Policy Navigator"
+            className="login-robot-icon"
+          />
+          <h2 style={{ margin: 0, textAlign: 'left' }}>Policy Navigator</h2>
+        </div>
+
         <p className="login-subtitle">Accedi per consultare le policy aziendali</p>
 
         <form onSubmit={handleSubmit} noValidate>

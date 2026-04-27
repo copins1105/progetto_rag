@@ -6,6 +6,7 @@
 // import { useAuth } from '../context/AuthContext'
 // import ThemeToggle from "../components/ThemeToggle"
 // import logo from "../assets/Logo Exprivia pulito.png"
+// import logoIcona from '../assets/logoicona.png'
 
 // const BASE_SERVER_URL = 'https://127.0.0.1:8080'
 
@@ -14,18 +15,28 @@
 //   return text.replace(/<\/?[A-Z]+>/g, '').trim()
 // }
 
+// /**
+//  * FIX PRINCIPALE: src.link arriva già come "/static/FILE.pdf#page=N"
+//  * Basta anteporre BASE_SERVER_URL — NON aggiungere #page un'altra volta.
+//  * Se src.link è vuoto, usa src.page come fallback per costruire l'URL statico.
+//  */
 // function buildPdfHref(src) {
-//   if (!src?.link) return null
-//   const base = `${BASE_SERVER_URL}${src.link}`.split('#')[0]
-//   return src.page ? `${base}#page=${src.page}` : base
+//   if (!src) return null
+
+//   // Caso 1: link completo con #page già incluso (caso normale post-fix)
+//   if (src.link) {
+//     return `${BASE_SERVER_URL}${src.link}`
+//   }
+
+//   // Caso 2: fallback vecchio — nessun anchor_link, costruisci manualmente
+//   // (non dovrebbe più capitare ma lo teniamo per sicurezza)
+//   return null
 // }
 
 // function buildDebugHref(chunk) {
 //   if (!chunk?.anchor_link) return null
-//   const base = `${BASE_SERVER_URL}${chunk.anchor_link}`.split('#')[0]
-//   return chunk.pagina && chunk.pagina !== 'N/D'
-//     ? `${base}#page=${chunk.pagina}`
-//     : base
+//   // anchor_link già include #page=N
+//   return `${BASE_SERVER_URL}${chunk.anchor_link}`
 // }
 
 // // ─── Citation helpers ──────────────────────────────────────────
@@ -69,8 +80,18 @@
 //     const src   = sourceMap[inner]
 //     if (match.index > lastIndex) parts.push({ type: 'text', content: text.slice(lastIndex, match.index) })
 //     if (src) {
+//       // Usa la pagina dalla citazione inline [TITOLO|pN] se disponibile,
+//       // altrimenti quella della sorgente
 //       const page = match[2] || src.page || ''
-//       parts.push({ type: 'citation', title: match[1].trim(), page, src })
+//       // Costruisce href usando il link completo della sorgente
+//       // ma sostituisce il #page con quello della citazione inline se diverso
+//       let citationSrc = src
+//       if (match[2] && src.link) {
+//         // Sostituzione numero pagina nell'anchor_link se specificato inline
+//         const newLink = src.link.replace(/#page=\d+/, `#page=${match[2]}`)
+//         citationSrc = { ...src, link: newLink, page: match[2] }
+//       }
+//       parts.push({ type: 'citation', title: match[1].trim(), page, src: citationSrc })
 //     } else {
 //       parts.push({ type: 'text', content: match[0] })
 //     }
@@ -209,6 +230,7 @@
 //           </div>
 //         ) : debugData.map((chunk, i) => {
 //           const hasPage = chunk.pagina && chunk.pagina !== 'N/D' && chunk.pagina !== ''
+//           // FIX: anchor_link già include #page
 //           const href    = buildDebugHref(chunk)
 //           return (
 //             <div key={i} style={{
@@ -249,7 +271,7 @@
 //                     fontSize: '0.65rem', color: 'var(--green)', textDecoration: 'none',
 //                     marginBottom: 6, display: 'inline-block',
 //                   }}>
-//                     🔗 apri PDF
+//                     🔗 apri PDF (p.{chunk.pagina})
 //                   </a>
 //                 )}
 //                 <div style={{
@@ -266,9 +288,6 @@
 //   )
 // }
 
-// // ─────────────────────────────────────────────
-// // CHAT PAGE
-// // ─────────────────────────────────────────────
 // export default function ChatPage() {
 //   const navigate  = useNavigate()
 //   const { messages, sessionId, addMessage, resetChat } = useChat()
@@ -321,16 +340,9 @@
 
 //   return (
 //     <div className="app-container">
-//       {/* ── Sidebar ── */}
 //       <aside className="chat-sidebar">
-
-//         {/* Brand con logo Exprivia */}
 //         <div className="sidebar-brand">
-//           <img
-//             src={logo}
-//             alt="Exprivia"
-//             className="exprivia-logo-sidebar"
-//           />
+//           <img src={logo} alt="Exprivia" className="exprivia-logo-sidebar" />
 //           <div className="sidebar-brand-divider" />
 //           <div className="sidebar-brand-text">
 //             <span className="sidebar-brand-name">Policy Navigator</span>
@@ -358,7 +370,6 @@
 //         </div>
 
 //         <div className="sidebar-footer">
-//           {/* Toggle debug */}
 //           <button onClick={() => setDebugEnabled(d => !d)} style={{
 //             width: '100%', padding: '7px 10px', marginBottom: 6,
 //             background: debugEnabled ? 'var(--yellow-dim)' : 'transparent',
@@ -383,20 +394,17 @@
 //             </button>
 //           )}
 
-//           {/* Link profilo */}
 //           <button className="admin-nav-btn" onClick={() => navigate('/profile')} style={{ marginBottom: 6 }}>
 //             <span>👤</span>
 //             {user?.nome ? `${user.nome} ${user.cognome || ''}`.trim() : user?.email}
 //           </button>
 
-//           {/* Admin (solo se permesso) */}
 //           {hasPermission('page_admin') && (
 //             <button className="admin-nav-btn" onClick={() => navigate('/admin')} style={{ marginBottom: 6 }}>
 //               <span>⚙</span> Pannello Admin
 //             </button>
 //           )}
 
-//           {/* Logout */}
 //           <button
 //             className="admin-nav-btn"
 //             onClick={handleLogout}
@@ -413,8 +421,7 @@
 //         </div>
 //       </aside>
 
-//       {/* ── Chat main ── */}
-//       <main className="chat-window">
+//       <main className="chat-window" style={{'--watermark-icon': `url(${logoIcona})`}}>
 //         <div className="chat-topbar">
 //           <span className="topbar-title">Assistente documentale</span>
 //           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -474,12 +481,23 @@
 //   )
 // }
 
-
-// src/pages/ChatPage.jsx
 // src/pages/ChatPage.jsx
 // FIX LINK: src.link già contiene #page=N — non ricostruire l'URL nel frontend.
 // FIX GUARD: rimosso il filtro FUORI SCOPE dall'LLM, solo jailbreak regex.
 // FIX CROSS-DOC: routing agent più tollerante (vedi rag_chain_langgraph.py).
+// ADDED: robot logo watermark in chat background + theme-aware filters
+
+// src/pages/ChatPage.jsx
+// FIX LINK: src.link già contiene #page=N — non ricostruire l'URL nel frontend.
+// FIX GUARD: rimosso il filtro FUORI SCOPE dall'LLM, solo jailbreak regex.
+// FIX CROSS-DOC: routing agent più tollerante (vedi rag_chain_langgraph.py).
+// ADDED: robot logo watermark in chat background + theme-aware filters
+
+// src/pages/ChatPage.jsx
+// FIX LINK: src.link già contiene #page=N — non ricostruire l'URL nel frontend.
+// FIX GUARD: rimosso il filtro FUORI SCOPE dall'LLM, solo jailbreak regex.
+// FIX CROSS-DOC: routing agent più tollerante (vedi rag_chain_langgraph.py).
+// ADDED: robot logo watermark in chat background + theme-aware filters
 
 import { useState, useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -489,6 +507,7 @@ import { useChat } from '../context/ChatContext'
 import { useAuth } from '../context/AuthContext'
 import ThemeToggle from "../components/ThemeToggle"
 import logo from "../assets/Logo Exprivia pulito.png"
+import robotLogo from "../assets/Logo.png"
 
 const BASE_SERVER_URL = 'https://127.0.0.1:8080'
 
@@ -497,27 +516,16 @@ const formatBotResponse = (text) => {
   return text.replace(/<\/?[A-Z]+>/g, '').trim()
 }
 
-/**
- * FIX PRINCIPALE: src.link arriva già come "/static/FILE.pdf#page=N"
- * Basta anteporre BASE_SERVER_URL — NON aggiungere #page un'altra volta.
- * Se src.link è vuoto, usa src.page come fallback per costruire l'URL statico.
- */
 function buildPdfHref(src) {
   if (!src) return null
-
-  // Caso 1: link completo con #page già incluso (caso normale post-fix)
   if (src.link) {
     return `${BASE_SERVER_URL}${src.link}`
   }
-
-  // Caso 2: fallback vecchio — nessun anchor_link, costruisci manualmente
-  // (non dovrebbe più capitare ma lo teniamo per sicurezza)
   return null
 }
 
 function buildDebugHref(chunk) {
   if (!chunk?.anchor_link) return null
-  // anchor_link già include #page=N
   return `${BASE_SERVER_URL}${chunk.anchor_link}`
 }
 
@@ -562,14 +570,9 @@ function InlineCitationText({ text, sourceMap }) {
     const src   = sourceMap[inner]
     if (match.index > lastIndex) parts.push({ type: 'text', content: text.slice(lastIndex, match.index) })
     if (src) {
-      // Usa la pagina dalla citazione inline [TITOLO|pN] se disponibile,
-      // altrimenti quella della sorgente
       const page = match[2] || src.page || ''
-      // Costruisce href usando il link completo della sorgente
-      // ma sostituisce il #page con quello della citazione inline se diverso
       let citationSrc = src
       if (match[2] && src.link) {
-        // Sostituzione numero pagina nell'anchor_link se specificato inline
         const newLink = src.link.replace(/#page=\d+/, `#page=${match[2]}`)
         citationSrc = { ...src, link: newLink, page: match[2] }
       }
@@ -712,7 +715,6 @@ function DebugDrawer({ open, onClose, debugData }) {
           </div>
         ) : debugData.map((chunk, i) => {
           const hasPage = chunk.pagina && chunk.pagina !== 'N/D' && chunk.pagina !== ''
-          // FIX: anchor_link già include #page
           const href    = buildDebugHref(chunk)
           return (
             <div key={i} style={{
@@ -766,6 +768,37 @@ function DebugDrawer({ open, onClose, debugData }) {
           )
         })}
       </div>
+    </div>
+  )
+}
+
+// ─── Robot Watermark — theme-aware ────────────────────────────
+// Dark mode: sfondo nero del PNG scompare con mix-blend-mode screen
+// Light mode: invert(1) porta il nero a bianco, poi screen lo fa scomparire
+function RobotWatermark() {
+  return (
+    <div style={{
+      position: 'absolute',
+      inset: 0,
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      pointerEvents: 'none',
+      zIndex: 0,
+      overflow: 'hidden',
+    }}>
+      <img
+        src={robotLogo}
+        alt=""
+        className="chat-robot-watermark"
+        style={{
+          width: 400,
+          height: 400,
+          objectFit: 'contain',
+          userSelect: 'none',
+          flexShrink: 0,
+        }}
+      />
     </div>
   )
 }
@@ -904,7 +937,10 @@ export default function ChatPage() {
       </aside>
 
       <main className="chat-window">
-        <div className="chat-topbar">
+        {/* Robot watermark — positioned inside chat-window */}
+        <RobotWatermark />
+
+        <div className="chat-topbar" style={{ position: 'relative', zIndex: 1 }}>
           <span className="topbar-title">Assistente documentale</span>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             {debugEnabled && (
@@ -924,7 +960,7 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div className="messages-display">
+        <div className="messages-display" style={{ position: 'relative', zIndex: 1 }}>
           {messages.map((msg, index) => (
             <div key={index} className={`bubble ${msg.role}`}>
               {msg.role === 'bot' ? (
@@ -944,7 +980,7 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
-        <div className="input-field-container">
+        <div className="input-field-container" style={{ position: 'relative', zIndex: 1 }}>
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}
