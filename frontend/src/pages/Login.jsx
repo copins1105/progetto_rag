@@ -130,81 +130,104 @@ export default function Login() {
     }
   };
 
-  return (
-    <div className="login-wrapper">
-      <div className="login-box">
+  // Sostituisci il contenuto del return in Login.jsx
 
-        {/* Logo Exprivia centrato in cima alla card */}
-        <div className="login-logo-area">
-          <img
-            src={logo}
-            alt="Exprivia"
-            className="exprivia-logo-login"
-          />
-          <div className="login-logo-divider" />
-        </div>
+return (
+  <div className="login-wrapper">
+    <div className="login-box">
 
-        {/* Titolo con icona robot affiancata */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '12px',
-          marginTop: '-46px',
-          marginBottom: '4px',
-        }}>
-          <img
-            src={robotLogo}
-            alt="Policy Navigator"
-            className="login-robot-icon"
-          />
-          <h2 style={{ margin: 0, textAlign: 'left' }}>Policy Navigator</h2>
-        </div>
-
-        <p className="login-subtitle">Accedi per consultare le policy aziendali</p>
-
-        <form onSubmit={handleSubmit} noValidate>
-          <input
-            type="email"
-            placeholder="Email aziendale"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            disabled={loading}
-            autoComplete="username"
-            required
-          />
-          <input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            disabled={loading}
-            autoComplete="current-password"
-            required
-          />
-
-          {error && (
-            <div style={{
-              background: "var(--red-dim)",
-              border: "1px solid rgba(224,90,90,0.30)",
-              borderRadius: "6px",
-              padding: "9px 12px",
-              marginBottom: "10px",
-              fontSize: "0.8rem",
-              color: "var(--red)",
-              display: "flex",
-              alignItems: "center",
-              gap: "7px",
-            }}>
-              <span>⚠</span> {error}
-            </div>
-          )}
-
-          <button type="submit" disabled={loading}>
-            {loading ? "Accesso in corso…" : "Accedi"}
-          </button>
-        </form>
+      {/* 1. Robot logo — grande, in cima */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        marginBottom: '-100px',
+        marginTop: '-10px',
+      }}>
+        <img
+          src={robotLogo}
+          alt="Policy Navigator"
+          style={{
+            width: 200,
+            height: 200,
+            objectFit: 'contain',
+            display: 'block',
+          }}
+        />
       </div>
+
+      {/* 2. Logo Exprivia — piccolo, subito sotto */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'center',
+        marginBottom: '-30px',
+      }}>
+        <img
+          src={logo}
+          alt="Exprivia"
+          style={{
+            height: '130px',
+            width: 'auto',
+            display: 'block',
+          }}
+        />
+      </div>
+
+      {/* 3. Policy Navigator */}
+      <h2 style={{
+        textAlign: 'center',
+        margin: '0 0 4px 0',
+        fontSize: '1.4rem',
+        fontWeight: 700,
+        letterSpacing: '-0.025em',
+        color: 'var(--text)',
+      }}>
+        Policy Navigator
+      </h2>
+
+      <p className="login-subtitle">Accedi per consultare le policy aziendali</p>
+
+      <form onSubmit={handleSubmit} noValidate>
+        <input
+          type="email"
+          placeholder="Email aziendale"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          disabled={loading}
+          autoComplete="username"
+          required
+        />
+        <input
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          disabled={loading}
+          autoComplete="current-password"
+          required
+        />
+
+        {error && (
+          <div style={{
+            background: "var(--red-dim)",
+            border: "1px solid rgba(224,90,90,0.30)",
+            borderRadius: "6px",
+            padding: "9px 12px",
+            marginBottom: "10px",
+            fontSize: "0.8rem",
+            color: "var(--red)",
+            display: "flex",
+            alignItems: "center",
+            gap: "7px",
+          }}>
+            <span>⚠</span> {error}
+          </div>
+        )}
+
+        <button type="submit" disabled={loading}>
+          {loading ? "Accesso in corso…" : "Accedi"}
+        </button>
+      </form>
     </div>
-  );
+  </div>
+)
 }

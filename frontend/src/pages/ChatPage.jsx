@@ -6,7 +6,7 @@
 // import { useAuth } from '../context/AuthContext'
 // import ThemeToggle from "../components/ThemeToggle"
 // import logo from "../assets/Logo Exprivia pulito.png"
-// import logoIcona from '../assets/logoicona.png'
+// import robotLogo from "../assets/Logo.png"
 
 // const BASE_SERVER_URL = 'https://127.0.0.1:8080'
 
@@ -15,27 +15,16 @@
 //   return text.replace(/<\/?[A-Z]+>/g, '').trim()
 // }
 
-// /**
-//  * FIX PRINCIPALE: src.link arriva già come "/static/FILE.pdf#page=N"
-//  * Basta anteporre BASE_SERVER_URL — NON aggiungere #page un'altra volta.
-//  * Se src.link è vuoto, usa src.page come fallback per costruire l'URL statico.
-//  */
 // function buildPdfHref(src) {
 //   if (!src) return null
-
-//   // Caso 1: link completo con #page già incluso (caso normale post-fix)
 //   if (src.link) {
 //     return `${BASE_SERVER_URL}${src.link}`
 //   }
-
-//   // Caso 2: fallback vecchio — nessun anchor_link, costruisci manualmente
-//   // (non dovrebbe più capitare ma lo teniamo per sicurezza)
 //   return null
 // }
 
 // function buildDebugHref(chunk) {
 //   if (!chunk?.anchor_link) return null
-//   // anchor_link già include #page=N
 //   return `${BASE_SERVER_URL}${chunk.anchor_link}`
 // }
 
@@ -80,14 +69,9 @@
 //     const src   = sourceMap[inner]
 //     if (match.index > lastIndex) parts.push({ type: 'text', content: text.slice(lastIndex, match.index) })
 //     if (src) {
-//       // Usa la pagina dalla citazione inline [TITOLO|pN] se disponibile,
-//       // altrimenti quella della sorgente
 //       const page = match[2] || src.page || ''
-//       // Costruisce href usando il link completo della sorgente
-//       // ma sostituisce il #page con quello della citazione inline se diverso
 //       let citationSrc = src
 //       if (match[2] && src.link) {
-//         // Sostituzione numero pagina nell'anchor_link se specificato inline
 //         const newLink = src.link.replace(/#page=\d+/, `#page=${match[2]}`)
 //         citationSrc = { ...src, link: newLink, page: match[2] }
 //       }
@@ -230,7 +214,6 @@
 //           </div>
 //         ) : debugData.map((chunk, i) => {
 //           const hasPage = chunk.pagina && chunk.pagina !== 'N/D' && chunk.pagina !== ''
-//           // FIX: anchor_link già include #page
 //           const href    = buildDebugHref(chunk)
 //           return (
 //             <div key={i} style={{
@@ -284,6 +267,37 @@
 //           )
 //         })}
 //       </div>
+//     </div>
+//   )
+// }
+
+// // ─── Robot Watermark — theme-aware ────────────────────────────
+// // Dark mode: sfondo nero del PNG scompare con mix-blend-mode screen
+// // Light mode: invert(1) porta il nero a bianco, poi screen lo fa scomparire
+// function RobotWatermark() {
+//   return (
+//     <div style={{
+//       position: 'absolute',
+//       inset: 0,
+//       display: 'flex',
+//       alignItems: 'center',
+//       justifyContent: 'center',
+//       pointerEvents: 'none',
+//       zIndex: 0,
+//       overflow: 'hidden',
+//     }}>
+//       <img
+//         src={robotLogo}
+//         alt=""
+//         className="chat-robot-watermark"
+//         style={{
+//           width: 400,
+//           height: 400,
+//           objectFit: 'contain',
+//           userSelect: 'none',
+//           flexShrink: 0,
+//         }}
+//       />
 //     </div>
 //   )
 // }
@@ -421,8 +435,11 @@
 //         </div>
 //       </aside>
 
-//       <main className="chat-window" style={{'--watermark-icon': `url(${logoIcona})`}}>
-//         <div className="chat-topbar">
+//       <main className="chat-window">
+//         {/* Robot watermark — positioned inside chat-window */}
+//         <RobotWatermark />
+
+//         <div className="chat-topbar" style={{ position: 'relative', zIndex: 1 }}>
 //           <span className="topbar-title">Assistente documentale</span>
 //           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
 //             {debugEnabled && (
@@ -442,7 +459,7 @@
 //           </div>
 //         </div>
 
-//         <div className="messages-display">
+//         <div className="messages-display" style={{ position: 'relative', zIndex: 1 }}>
 //           {messages.map((msg, index) => (
 //             <div key={index} className={`bubble ${msg.role}`}>
 //               {msg.role === 'bot' ? (
@@ -462,7 +479,7 @@
 //           <div ref={bottomRef} />
 //         </div>
 
-//         <div className="input-field-container">
+//         <div className="input-field-container" style={{ position: 'relative', zIndex: 1 }}>
 //           <input
 //             value={input}
 //             onChange={(e) => setInput(e.target.value)}
@@ -482,24 +499,12 @@
 // }
 
 // src/pages/ChatPage.jsx
-// FIX LINK: src.link già contiene #page=N — non ricostruire l'URL nel frontend.
-// FIX GUARD: rimosso il filtro FUORI SCOPE dall'LLM, solo jailbreak regex.
-// FIX CROSS-DOC: routing agent più tollerante (vedi rag_chain_langgraph.py).
-// ADDED: robot logo watermark in chat background + theme-aware filters
+// FIX link PDF, guard jailbreak only.
+// NEW: sidebar mostra storico sessioni reale dal DB (GET /api/v1/chat/sessions).
+//      Ogni sessione è cliccabile e ripristina la chat in sola lettura.
+//      Il badge stelle CSAT appare sui messaggi bot.
 
-// src/pages/ChatPage.jsx
-// FIX LINK: src.link già contiene #page=N — non ricostruire l'URL nel frontend.
-// FIX GUARD: rimosso il filtro FUORI SCOPE dall'LLM, solo jailbreak regex.
-// FIX CROSS-DOC: routing agent più tollerante (vedi rag_chain_langgraph.py).
-// ADDED: robot logo watermark in chat background + theme-aware filters
-
-// src/pages/ChatPage.jsx
-// FIX LINK: src.link già contiene #page=N — non ricostruire l'URL nel frontend.
-// FIX GUARD: rimosso il filtro FUORI SCOPE dall'LLM, solo jailbreak regex.
-// FIX CROSS-DOC: routing agent più tollerante (vedi rag_chain_langgraph.py).
-// ADDED: robot logo watermark in chat background + theme-aware filters
-
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -517,11 +522,8 @@ const formatBotResponse = (text) => {
 }
 
 function buildPdfHref(src) {
-  if (!src) return null
-  if (src.link) {
-    return `${BASE_SERVER_URL}${src.link}`
-  }
-  return null
+  if (!src?.link) return null
+  return `${BASE_SERVER_URL}${src.link}`
 }
 
 function buildDebugHref(chunk) {
@@ -529,7 +531,6 @@ function buildDebugHref(chunk) {
   return `${BASE_SERVER_URL}${chunk.anchor_link}`
 }
 
-// ─── Citation helpers ──────────────────────────────────────────
 function buildSourceMap(sources) {
   const map = {}
   if (!sources) return map
@@ -592,23 +593,19 @@ function InlineCitationText({ text, sourceMap }) {
           const label = part.page ? `${part.title} · p.${part.page}` : part.title
           return href ? (
             <a key={i} href={href} target="_blank" rel="noreferrer"
-              style={{
-                display: 'inline-flex', alignItems: 'center', gap: '3px',
-                fontSize: '0.72em', fontFamily: "'JetBrains Mono', monospace",
-                background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
-                borderRadius: '4px', padding: '1px 6px', color: 'var(--accent-bright)',
-                textDecoration: 'none', verticalAlign: 'middle',
-                marginLeft: '2px', lineHeight: 1.4, whiteSpace: 'nowrap',
-              }}>
+              style={{ display:'inline-flex', alignItems:'center', gap:'3px',
+                fontSize:'0.72em', fontFamily:"'JetBrains Mono', monospace",
+                background:'var(--accent-dim)', border:'1px solid var(--border-accent)',
+                borderRadius:'4px', padding:'1px 6px', color:'var(--accent-bright)',
+                textDecoration:'none', verticalAlign:'middle', marginLeft:'2px',
+                lineHeight:1.4, whiteSpace:'nowrap' }}>
               📄 {label}
             </a>
           ) : (
-            <span key={i} style={{
-              fontSize: '0.72em', fontFamily: "'JetBrains Mono', monospace",
-              background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
-              borderRadius: '4px', padding: '1px 6px', color: 'var(--accent-bright)',
-              verticalAlign: 'middle', marginLeft: '2px',
-            }}>
+            <span key={i} style={{ fontSize:'0.72em', fontFamily:"'JetBrains Mono', monospace",
+              background:'var(--accent-dim)', border:'1px solid var(--border-accent)',
+              borderRadius:'4px', padding:'1px 6px', color:'var(--accent-bright)',
+              verticalAlign:'middle', marginLeft:'2px' }}>
               📄 {label}
             </span>
           )
@@ -632,11 +629,41 @@ function ProcessChildren({ children, sourceMap }) {
   return <>{processNode(children, 0)}</>
 }
 
-function BotMessage({ text, sources }) {
+// ─── BotMessage con feedback CSAT ────────────────────────────
+function BotMessage({ text, sources, logId, authFetch }) {
   const sourceMap    = buildSourceMap(sources)
   const cleanText    = formatBotResponse(text)
   const useInline    = hasInlineCitations(cleanText, sourceMap)
   const singleSource = sources && sources.length === 1
+  const [csat, setCsat] = useState(null)
+
+  const submitCsat = async (value) => {
+    setCsat(value)
+    if (!logId || !authFetch) return
+    try {
+      await authFetch(`/api/v1/chat/sessions/${logId}/feedback`, {
+        method: 'POST',
+        body: JSON.stringify({ csat: value }),
+      })
+    } catch (e) { console.error('feedback error', e) }
+  }
+
+  const Stars = () => (
+    <div style={{ display:'flex', gap:3, marginTop:8, alignItems:'center' }}>
+      <span style={{ fontSize:'0.65rem', color:'var(--text-muted)', marginRight:4 }}>
+        Utile?
+      </span>
+      {[1,2,3,4,5].map(n => (
+        <button key={n} onClick={() => submitCsat(n)}
+          style={{ background:'none', border:'none', cursor:'pointer',
+            fontSize:'0.9rem', padding:0, opacity: csat ? (csat === n ? 1 : 0.3) : 0.6,
+            transition:'opacity 0.15s' }}>
+          ★
+        </button>
+      ))}
+      {csat && <span style={{ fontSize:'0.65rem', color:'var(--text-muted)', marginLeft:4 }}>Grazie!</span>}
+    </div>
+  )
 
   if (!useInline || singleSource) {
     return (
@@ -645,18 +672,22 @@ function BotMessage({ text, sources }) {
           <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanText}</ReactMarkdown>
         </div>
         {sources && sources.length > 0 && <SourcesFooter sources={sources} />}
+        <Stars />
       </>
     )
   }
   return (
-    <div className="message-content">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
-        p:  ({ children }) => <p><ProcessChildren sourceMap={sourceMap}>{children}</ProcessChildren></p>,
-        li: ({ children }) => <li><ProcessChildren sourceMap={sourceMap}>{children}</ProcessChildren></li>,
-      }}>
-        {cleanText}
-      </ReactMarkdown>
-    </div>
+    <>
+      <div className="message-content">
+        <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
+          p:  ({ children }) => <p><ProcessChildren sourceMap={sourceMap}>{children}</ProcessChildren></p>,
+          li: ({ children }) => <li><ProcessChildren sourceMap={sourceMap}>{children}</ProcessChildren></li>,
+        }}>
+          {cleanText}
+        </ReactMarkdown>
+      </div>
+      <Stars />
+    </>
   )
 }
 
@@ -673,7 +704,7 @@ function SourcesFooter({ sources }) {
             <div key={i} className="source-tag">
               {href
                 ? <a href={href} target="_blank" rel="noreferrer">📄 {label}</a>
-                : <span style={{ color: 'var(--text-dim)', fontSize: '0.75rem' }}>📄 {label}</span>
+                : <span style={{ color:'var(--text-dim)', fontSize:'0.75rem' }}>📄 {label}</span>
               }
             </div>
           )
@@ -686,83 +717,71 @@ function SourcesFooter({ sources }) {
 function DebugDrawer({ open, onClose, debugData }) {
   if (!open) return null
   return (
-    <div style={{
-      position: 'fixed', top: 0, right: 0, bottom: 0, width: 420,
-      background: 'var(--surface)', borderLeft: '1px solid var(--border-strong)',
-      display: 'flex', flexDirection: 'column', zIndex: 200,
-      boxShadow: '-8px 0 36px rgba(0,0,0,0.45)',
-    }}>
-      <div style={{
-        padding: '16px 18px', borderBottom: '1px solid var(--border)',
-        display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexShrink: 0,
-      }}>
+    <div style={{ position:'fixed', top:0, right:0, bottom:0, width:420,
+      background:'var(--surface)', borderLeft:'1px solid var(--border-strong)',
+      display:'flex', flexDirection:'column', zIndex:200,
+      boxShadow:'-8px 0 36px rgba(0,0,0,0.45)' }}>
+      <div style={{ padding:'16px 18px', borderBottom:'1px solid var(--border)',
+        display:'flex', justifyContent:'space-between', alignItems:'center', flexShrink:0 }}>
         <div>
-          <div style={{ fontWeight: 700, fontSize: '0.9rem', color: 'var(--text)' }}>🔍 Retrieval Debug</div>
-          <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginTop: 2, fontFamily: "'JetBrains Mono', monospace" }}>
+          <div style={{ fontWeight:700, fontSize:'0.9rem', color:'var(--text)' }}>🔍 Retrieval Debug</div>
+          <div style={{ fontSize:'0.7rem', color:'var(--text-muted)', marginTop:2, fontFamily:"'JetBrains Mono', monospace" }}>
             {debugData?.length || 0} chunk recuperati
           </div>
         </div>
-        <button onClick={onClose} style={{
-          background: 'none', border: '1px solid var(--border-strong)',
-          borderRadius: 6, padding: '4px 10px', cursor: 'pointer',
-          color: 'var(--text-muted)', fontFamily: 'inherit', fontSize: '0.8rem',
-        }}>✕ Chiudi</button>
+        <button onClick={onClose} style={{ background:'none', border:'1px solid var(--border-strong)',
+          borderRadius:6, padding:'4px 10px', cursor:'pointer',
+          color:'var(--text-muted)', fontFamily:'inherit', fontSize:'0.8rem' }}>✕ Chiudi</button>
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '12px 14px' }}>
+      <div style={{ flex:1, overflowY:'auto', padding:'12px 14px' }}>
         {(!debugData || debugData.length === 0) ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: '0.78rem', textAlign: 'center', padding: 32 }}>
+          <div style={{ color:'var(--text-muted)', fontSize:'0.78rem', textAlign:'center', padding:32 }}>
             Nessun chunk disponibile.
           </div>
         ) : debugData.map((chunk, i) => {
           const hasPage = chunk.pagina && chunk.pagina !== 'N/D' && chunk.pagina !== ''
           const href    = buildDebugHref(chunk)
           return (
-            <div key={i} style={{
-              background: 'var(--surface2)', border: '1px solid var(--border)',
-              borderRadius: 8, marginBottom: 6, overflow: 'hidden',
-            }}>
-              <div style={{ padding: '9px 12px', display: 'flex', gap: 8, alignItems: 'flex-start' }}>
-                <span style={{ fontSize: '0.65rem', fontFamily: "'JetBrains Mono', monospace", color: 'var(--accent-bright)', flexShrink: 0, minWidth: 24 }}>
+            <div key={i} style={{ background:'var(--surface2)', border:'1px solid var(--border)',
+              borderRadius:8, marginBottom:6, overflow:'hidden' }}>
+              <div style={{ padding:'9px 12px', display:'flex', gap:8, alignItems:'flex-start' }}>
+                <span style={{ fontSize:'0.65rem', fontFamily:"'JetBrains Mono', monospace",
+                  color:'var(--accent-bright)', flexShrink:0, minWidth:24 }}>
                   C{chunk.chunk_idx}
                 </span>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <div style={{ flex:1, minWidth:0 }}>
+                  <div style={{ fontSize:'0.75rem', fontWeight:600, color:'var(--text)',
+                    overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                     {chunk.titolo}
                   </div>
                   {chunk.breadcrumb && (
-                    <div style={{ fontSize: '0.65rem', color: 'var(--text-muted)', marginTop: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <div style={{ fontSize:'0.65rem', color:'var(--text-muted)', marginTop:1,
+                      overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap' }}>
                       {chunk.breadcrumb}
                     </div>
                   )}
                 </div>
-                <span style={{
-                  fontSize: '0.65rem', fontFamily: "'JetBrains Mono', monospace",
-                  padding: '2px 7px', borderRadius: 20, flexShrink: 0,
+                <span style={{ fontSize:'0.65rem', fontFamily:"'JetBrains Mono', monospace",
+                  padding:'2px 7px', borderRadius:20, flexShrink:0,
                   background: hasPage ? 'var(--accent-dim)' : 'var(--surface)',
                   color: hasPage ? 'var(--accent-bright)' : 'var(--text-muted)',
-                  border: `1px solid ${hasPage ? 'var(--border-accent)' : 'var(--border)'}`,
-                }}>
+                  border: `1px solid ${hasPage ? 'var(--border-accent)' : 'var(--border)'}` }}>
                   {hasPage ? `p.${chunk.pagina}` : 'no pag.'}
                 </span>
               </div>
-              <div style={{
-                padding: '6px 12px 10px', borderTop: '1px solid var(--border)',
-                fontSize: '0.7rem', fontFamily: "'JetBrains Mono', monospace",
-                color: 'var(--text-dim)', lineHeight: 1.6,
-              }}>
+              <div style={{ padding:'6px 12px 10px', borderTop:'1px solid var(--border)',
+                fontSize:'0.7rem', fontFamily:"'JetBrains Mono', monospace",
+                color:'var(--text-dim)', lineHeight:1.6 }}>
                 {href && (
                   <a href={href} target="_blank" rel="noreferrer" style={{
-                    fontSize: '0.65rem', color: 'var(--green)', textDecoration: 'none',
-                    marginBottom: 6, display: 'inline-block',
-                  }}>
+                    fontSize:'0.65rem', color:'var(--green)', textDecoration:'none',
+                    marginBottom:6, display:'inline-block' }}>
                     🔗 apri PDF (p.{chunk.pagina})
                   </a>
                 )}
-                <div style={{
-                  background: 'var(--bg)', borderRadius: 4, padding: '6px 8px',
-                  border: '1px solid var(--border)', whiteSpace: 'pre-wrap',
-                  maxHeight: 120, overflowY: 'auto',
-                }}>{chunk.preview}</div>
+                <div style={{ background:'var(--bg)', borderRadius:4, padding:'6px 8px',
+                  border:'1px solid var(--border)', whiteSpace:'pre-wrap',
+                  maxHeight:120, overflowY:'auto' }}>{chunk.preview}</div>
               </div>
             </div>
           )
@@ -772,40 +791,119 @@ function DebugDrawer({ open, onClose, debugData }) {
   )
 }
 
-// ─── Robot Watermark — theme-aware ────────────────────────────
-// Dark mode: sfondo nero del PNG scompare con mix-blend-mode screen
-// Light mode: invert(1) porta il nero a bianco, poi screen lo fa scomparire
+// ─── Storico sessioni nella sidebar ──────────────────────────
+const SessionHistory = forwardRef(function SessionHistory(
+  { authFetch, onSelectSession, currentSessionId }, ref
+) {
+  const [sessions, setSessions]   = useState([])
+  const [loading, setLoading]     = useState(false)
+  const [expanded, setExpanded]   = useState(false)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const res  = await authFetch('/api/v1/chat/sessions?limit=15')
+      const data = await res.json()
+      setSessions(data.sessions || [])
+    } catch { }
+    finally { setLoading(false) }
+  }, [authFetch])
+
+  // Espone reload al componente padre
+  useImperativeHandle(ref, () => ({
+    reload: load
+  }), [load])
+
+  useEffect(() => { load() }, [load])
+
+  const archiveSession = async (uuid, e) => {
+    e.stopPropagation()
+    try {
+      await authFetch(`/api/v1/chat/sessions/${uuid}`, { method: 'DELETE' })
+      setSessions(prev => prev.filter(s => s.session_uuid !== uuid))
+    } catch { /* silenzioso */ }
+  }
+
+  if (sessions.length === 0 && !loading) return null
+
+  return (
+    <div style={{ padding: '6px 10px 0' }}>
+      <button
+        onClick={() => setExpanded(e => !e)}
+        style={{ width:'100%', background:'none', border:'none', cursor:'pointer',
+          display:'flex', alignItems:'center', justifyContent:'space-between',
+          padding:'6px 4px', color:'var(--text-muted)', fontSize:'0.67rem',
+          fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em' }}>
+        <span>Recenti</span>
+        <span style={{ fontSize:'0.6rem' }}>{expanded ? '▲' : '▼'}</span>
+      </button>
+
+      {loading && (
+        <div style={{ fontSize:'0.68rem', color:'var(--text-muted)', padding:'4px 8px' }}>
+          Caricamento…
+        </div>
+      )}
+
+      {expanded && sessions.map(sess => {
+        const isCurrent = sess.session_uuid === currentSessionId
+        return (
+          <div key={sess.session_uuid}
+            style={{ display:'flex', alignItems:'center', gap:4,
+              padding:'6px 8px', borderRadius:'var(--radius-xs)',
+              background: isCurrent ? 'var(--accent-dim)' : 'none',
+              border: isCurrent ? '1px solid var(--border-accent)' : '1px solid transparent',
+              cursor:'pointer', marginBottom:2, transition:'all 0.12s' }}
+            onClick={() => onSelectSession(sess)}>
+            <span style={{ fontSize:'0.72rem', flex:1, overflow:'hidden',
+              textOverflow:'ellipsis', whiteSpace:'nowrap',
+              color: isCurrent ? 'var(--accent-bright)' : 'var(--text-dim)' }}>
+              💬 {sess.titolo || 'Conversazione'}
+            </span>
+            <span style={{ fontSize:'0.6rem', color:'var(--text-muted)',
+              fontFamily:"'JetBrains Mono', monospace", flexShrink:0 }}>
+              {sess.n_messaggi}
+            </span>
+            <button
+              onClick={(e) => archiveSession(sess.session_uuid, e)}
+              title="Archivia"
+              style={{ background:'none', border:'none', cursor:'pointer',
+                color:'var(--text-muted)', fontSize:'0.7rem', padding:'0 2px',
+                flexShrink:0, opacity:0.5 }}>
+              ✕
+            </button>
+          </div>
+        )
+      })}
+    </div>
+  )
+})
+
 function RobotWatermark() {
   return (
     <div style={{
-      position: 'absolute',
-      inset: 0,
-      display: 'flex',
-      alignItems: 'center',
-      justifyContent: 'center',
-      pointerEvents: 'none',
-      zIndex: 0,
-      overflow: 'hidden',
+      position: 'absolute', inset: 0,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      pointerEvents: 'none', zIndex: 0, overflow: 'hidden',
     }}>
       <img
         src={robotLogo}
         alt=""
         className="chat-robot-watermark"
         style={{
-          width: 400,
-          height: 400,
+          width: 400, height: 400,
           objectFit: 'contain',
-          userSelect: 'none',
-          flexShrink: 0,
+          userSelect: 'none', flexShrink: 0,
         }}
       />
     </div>
   )
 }
-
+// ─────────────────────────────────────────────────────────────
+// CHAT PAGE PRINCIPALE
+// ─────────────────────────────────────────────────────────────
 export default function ChatPage() {
   const navigate  = useNavigate()
-  const { messages, sessionId, addMessage, resetChat } = useChat()
+  const { messages, sessionId, addMessage, resetChat, loadSession } = useChat()
   const { authFetch, user, logout, hasPermission } = useAuth()
 
   const [input,        setInput]        = useState('')
@@ -813,7 +911,10 @@ export default function ChatPage() {
   const [debugOpen,    setDebugOpen]    = useState(false)
   const [lastDebug,    setLastDebug]    = useState(null)
   const [debugEnabled, setDebugEnabled] = useState(false)
+  // logIds mappa index messaggio → log_id per il CSAT
+  const [logIds,       setLogIds]       = useState({})
   const bottomRef = useRef(null)
+  const sessionHistoryRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -836,11 +937,22 @@ export default function ChatPage() {
         }),
       })
       const data = await response.json()
+
+      // Indice del nuovo messaggio bot (dopo user che è già stato aggiunto)
+      const botIdx = messages.length + 1
       addMessage({ role: 'bot', text: data.answer, sources: data.sources })
+
+      // Salva log_id se il backend lo restituisce (opzionale)
+      if (data.log_id) {
+        setLogIds(prev => ({ ...prev, [botIdx]: data.log_id }))
+      }
+
       if (data.retrieval_debug) {
         setLastDebug(data.retrieval_debug)
         if (debugEnabled) setDebugOpen(true)
       }
+      sessionHistoryRef.current?.reload()
+
     } catch {
       addMessage({ role: 'bot', text: 'Errore di connessione al server.' })
     } finally {
@@ -852,6 +964,32 @@ export default function ChatPage() {
     await logout()
     navigate('/login')
   }
+
+  // Selezione di una sessione storica — la apre in sola lettura
+  const handleSelectSession = useCallback(async (sess) => {
+  if (sess.session_uuid === sessionId) return
+
+  try {
+    const res  = await authFetch(`/api/v1/chat/sessions/${sess.session_uuid}`)
+    const data = await res.json()
+
+    const INITIAL_MSG = {
+      role: 'bot',
+      text: 'Ciao, sono **Policy Navigator**. Posso aiutarti a trovare informazioni su policy aziendali, procedure e regolamenti. Come posso aiutarti?',
+    }
+
+    const msgs = [INITIAL_MSG]
+    for (const m of (data.messaggi || [])) {
+      msgs.push({ role: 'user', text: m.domanda })
+      msgs.push({ role: 'bot',  text: m.risposta, sources: [] })
+    }
+
+    loadSession(msgs, sess.session_uuid)
+
+  } catch (e) {
+    console.error('Errore caricamento sessione:', e)
+  }
+}, [authFetch, sessionId, loadSession])
 
   return (
     <div className="app-container">
@@ -869,87 +1007,73 @@ export default function ChatPage() {
           <span>＋</span> Nuova chat
         </button>
 
-        <div className="history-container">
-          <div className="history-label">Recenti</div>
-          {messages
-            .filter(m => m.role === 'user')
-            .slice(-6)
-            .map((m, i) => (
-              <div key={i} className="history-card">
-                <span style={{ opacity: 0.5, fontSize: '0.75rem' }}>💬</span>
-                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {m.text.slice(0, 38)}{m.text.length > 38 ? '…' : ''}
-                </span>
-              </div>
-            ))}
+        {/* ── Storico sessioni dal DB ── */}
+        <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
+          <SessionHistory
+            ref={sessionHistoryRef}
+            authFetch={authFetch}
+            onSelectSession={handleSelectSession}
+            currentSessionId={sessionId}
+          />
         </div>
 
         <div className="sidebar-footer">
           <button onClick={() => setDebugEnabled(d => !d)} style={{
-            width: '100%', padding: '7px 10px', marginBottom: 6,
+            width:'100%', padding:'7px 10px', marginBottom:6,
             background: debugEnabled ? 'var(--yellow-dim)' : 'transparent',
             border: `1px solid ${debugEnabled ? 'rgba(240,173,58,0.38)' : 'var(--border-strong)'}`,
-            borderRadius: 'var(--radius-sm)',
+            borderRadius:'var(--radius-sm)',
             color: debugEnabled ? 'var(--yellow)' : 'var(--text-muted)',
-            fontFamily: 'inherit', fontSize: '0.78rem', fontWeight: 600,
-            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-          }}>
+            fontFamily:'inherit', fontSize:'0.78rem', fontWeight:600,
+            cursor:'pointer', display:'flex', alignItems:'center', gap:6 }}>
             <span>{debugEnabled ? '🔍' : '○'}</span>
             Debug retrieval {debugEnabled ? 'ON' : 'OFF'}
           </button>
 
           {lastDebug && (
             <button onClick={() => setDebugOpen(true)} style={{
-              width: '100%', padding: '7px 10px', marginBottom: 6,
-              background: 'var(--accent-dim)', border: '1px solid var(--border-accent)',
-              borderRadius: 'var(--radius-sm)', color: 'var(--accent-bright)',
-              fontFamily: 'inherit', fontSize: '0.78rem', fontWeight: 600, cursor: 'pointer',
-            }}>
+              width:'100%', padding:'7px 10px', marginBottom:6,
+              background:'var(--accent-dim)', border:'1px solid var(--border-accent)',
+              borderRadius:'var(--radius-sm)', color:'var(--accent-bright)',
+              fontFamily:'inherit', fontSize:'0.78rem', fontWeight:600, cursor:'pointer' }}>
               🔍 Vedi {lastDebug.length} chunk recuperati
             </button>
           )}
 
-          <button className="admin-nav-btn" onClick={() => navigate('/profile')} style={{ marginBottom: 6 }}>
+          <button className="admin-nav-btn" onClick={() => navigate('/profile')} style={{ marginBottom:6 }}>
             <span>👤</span>
             {user?.nome ? `${user.nome} ${user.cognome || ''}`.trim() : user?.email}
           </button>
 
           {hasPermission('page_admin') && (
-            <button className="admin-nav-btn" onClick={() => navigate('/admin')} style={{ marginBottom: 6 }}>
+            <button className="admin-nav-btn" onClick={() => navigate('/admin')} style={{ marginBottom:6 }}>
               <span>⚙</span> Pannello Admin
             </button>
           )}
 
-          <button
-            className="admin-nav-btn"
-            onClick={handleLogout}
-            style={{ color: 'var(--red)', borderColor: 'var(--red-dim)' }}
-          >
+          <button className="admin-nav-btn" onClick={handleLogout}
+            style={{ color:'var(--red)', borderColor:'var(--red-dim)' }}>
             <span>↩</span> Esci
           </button>
 
-          <div className="session-badge" style={{ marginTop: '8px' }}>
+          {/* <div className="session-badge" style={{ marginTop:'8px' }}>
             ID: {sessionId}
-          </div>
+          </div> */}
 
           <ThemeToggle />
         </div>
       </aside>
 
       <main className="chat-window">
-        {/* Robot watermark — positioned inside chat-window */}
-        <RobotWatermark />
-
-        <div className="chat-topbar" style={{ position: 'relative', zIndex: 1 }}>
+        <RobotWatermark /> 
+        <div className="chat-topbar" style={{ position:'relative', zIndex:1 }}>
           <span className="topbar-title">Assistente documentale</span>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <div style={{ display:'flex', alignItems:'center', gap:12 }}>
             {debugEnabled && (
-              <span style={{
-                fontSize: '0.72rem', fontFamily: "'JetBrains Mono', monospace",
-                padding: '2px 8px', borderRadius: 20,
-                background: 'var(--yellow-dim)', color: 'var(--yellow)',
-                border: '1px solid rgba(240,173,58,0.32)',
-              }}>
+              <span style={{ fontSize:'0.72rem', fontFamily:"'JetBrains Mono', monospace",
+                padding:'2px 8px', borderRadius:20,
+                background:'var(--yellow-dim)', color:'var(--yellow)',
+                border:'1px solid rgba(240,173,58,0.32)' }}>
                 🔍 debug on
               </span>
             )}
@@ -960,11 +1084,16 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div className="messages-display" style={{ position: 'relative', zIndex: 1 }}>
+        <div className="messages-display" style={{ position:'relative', zIndex:1 }}>
           {messages.map((msg, index) => (
             <div key={index} className={`bubble ${msg.role}`}>
               {msg.role === 'bot' ? (
-                <BotMessage text={msg.text} sources={msg.sources} />
+                <BotMessage
+                  text={msg.text}
+                  sources={msg.sources}
+                  logId={logIds[index]}
+                  authFetch={authFetch}
+                />
               ) : (
                 <div className="message-content">{msg.text}</div>
               )}
@@ -980,7 +1109,7 @@ export default function ChatPage() {
           <div ref={bottomRef} />
         </div>
 
-        <div className="input-field-container" style={{ position: 'relative', zIndex: 1 }}>
+        <div className="input-field-container" style={{ position:'relative', zIndex:1 }}>
           <input
             value={input}
             onChange={(e) => setInput(e.target.value)}

@@ -264,7 +264,7 @@ import UserManagementPanel   from './UserManagementPanel'
 import ActivityLogPanel      from './ActivityLogPanel'
 import PermissionMatrixPanel from './PermissionMatrixPanel'
 import logo from '../assets/Logo Exprivia pulito.png'
-
+import ChatAuditPanel from './ChatAuditPanel'
 // ─── Icone SVG inline ─────────────────────────────────────────
 const Icon = {
   docs: (
@@ -301,6 +301,12 @@ const Icon = {
       <polyline points="15 18 9 12 15 6"/>
     </svg>
   ),
+  chat: (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+    </svg>
+  ),
 }
 
 // ─── Definizione sezioni ──────────────────────────────────────
@@ -309,7 +315,9 @@ const SECTIONS = [
   { id: 'users',       label: 'Utenti',    icon: Icon.users,       perm: 'tab_users' },
   { id: 'log',         label: 'Log',       icon: Icon.log,         perm: 'tab_log' },
   { id: 'permissions', label: 'Permessi',  icon: Icon.permissions, perm: 'tab_permissions' },
+  { id: 'chat_audit',  label: 'Chat',      icon: Icon.chat,        perm: 'chat_audit_view' }, // ← nuovo
 ]
+
 
 export default function AdminPage() {
   const navigate = useNavigate()
@@ -478,6 +486,13 @@ export default function AdminPage() {
             <PermissionMatrixPanel />
           </FullPageSection>
         )}
+
+        {activeSection === 'chat_audit' && (
+          <FullPageSection noPadding>
+            <ChatAuditPanel />
+          </FullPageSection>
+        )}
+        
       </main>
     </div>
   )

@@ -20,6 +20,7 @@ const CATEGORIE = {
   "Documenti": ["doc_upload", "doc_ingest", "doc_load", "doc_update", "doc_delete"],
   "Utenti":    ["user_view", "user_create", "user_update", "user_delete", "user_permissions"],
   "Log":       ["log_view"],
+  "Chat":      ["chat_history_view", "chat_audit_view"], 
 };
 
 const SHORT_LABELS = {
@@ -32,15 +33,18 @@ const SHORT_LABELS = {
   user_view: "Visualizza", user_create: "Crea", user_update: "Modifica",
   user_delete: "Elimina", user_permissions: "Permessi",
   log_view: "Visualizza",
+  chat_history_view: "Cronologia",   // ← aggiungi
+  chat_audit_view:   "Audit",  
 };
 
-const CAT_ICONS = { "Pagine": "🌐", "Tab Admin": "🗂️", "Documenti": "📄", "Utenti": "👥", "Log": "📋" };
+const CAT_ICONS = { "Pagine": "🌐", "Tab Admin": "🗂️", "Documenti": "📄", "Utenti": "👥", "Log": "📋" ,"Chat": "💬" };
 const CAT_COLORS = {
   "Pagine":    { bg: "rgba(79,142,247,0.08)",  accent: "#4f8ef7", border: "rgba(79,142,247,0.2)"  },
   "Tab Admin": { bg: "rgba(139,92,246,0.08)",  accent: "#8b5cf6", border: "rgba(139,92,246,0.2)"  },
   "Documenti": { bg: "rgba(20,184,166,0.08)",  accent: "#14b8a6", border: "rgba(20,184,166,0.2)"  },
   "Utenti":    { bg: "rgba(245,158,11,0.08)",  accent: "#f59e0b", border: "rgba(245,158,11,0.2)"  },
   "Log":       { bg: "rgba(239,68,68,0.08)",   accent: "#ef4444", border: "rgba(239,68,68,0.2)"   },
+  "Chat": { bg: "rgba(20,184,166,0.08)", accent: "#14b82a", border: "rgba(20, 184, 72, 0.2)" },  // ← aggiungi
 };
 
 function UserAvatar({ nome, cognome, email }) {

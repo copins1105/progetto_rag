@@ -262,11 +262,11 @@ body::after {
 
 .login-box {
   position: relative;
-  overflow: hidden; 
+  overflow: hidden;
   z-index: 1;
   background: var(--surface);
   border: 1px solid var(--border-strong);
-  padding: 28px 44px 40px;
+  padding: 20px 44px 40px;  /* era 28px top, ora 20px */
   border-radius: 20px;
   width: 420px;
   box-shadow: var(--shadow-lg), var(--shadow-accent);
@@ -309,7 +309,7 @@ body::after {
   font-weight: 700;
   letter-spacing: -0.025em;
   color: var(--text);
-  margin-top: -46px;
+  margin-top: 0;        /* rimosso il -46px */
   margin-bottom: 4px;
   text-align: center;
 }

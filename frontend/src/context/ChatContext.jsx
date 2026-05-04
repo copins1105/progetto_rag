@@ -1,5 +1,5 @@
 // src/context/ChatContext.jsx
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState, useEffect, useCallback } from "react";
 import { useAuth } from "./AuthContext";
 
 const ChatContext = createContext(null);
@@ -9,8 +9,14 @@ const INITIAL_MESSAGE = {
   text: "Ciao, sono **Policy Navigator**. Posso aiutarti a trovare informazioni su policy aziendali, procedure e regolamenti. Come posso aiutarti?",
 };
 
-const generateSessionId = () =>
-  `session_${Math.random().toString(36).substr(2, 9)}`;
+
+const generateSessionId = () => {
+  const array = new Uint8Array(16)
+  crypto.getRandomValues(array)
+  return 'session_' + Array.from(array)
+    .map(b => b.toString(16).padStart(2, '0'))
+    .join('')
+}
 
 export function ChatProvider({ children }) {
   const { user } = useAuth();
@@ -31,8 +37,13 @@ export function ChatProvider({ children }) {
     setSessionId(generateSessionId());
   };
 
+  const loadSession = useCallback((msgs, newSessionId) => {
+  setMessages(msgs)
+  setSessionId(newSessionId)
+  }, []);
+
   return (
-    <ChatContext.Provider value={{ messages, sessionId, addMessage, resetChat }}>
+    <ChatContext.Provider value={{ messages, sessionId, addMessage, resetChat , loadSession}}>
       {children}
     </ChatContext.Provider>
   );
