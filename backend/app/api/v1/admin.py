@@ -950,3 +950,131 @@ async def get_documents_ownership(request: Request, admin=Depends(require_admin)
         }
     finally:
         db.close()
+
+# ─────────────────────────────────────────────
+# ENDPOINT: audit chat sessioni (aggiungere in admin.py)
+# ─────────────────────────────────────────────
+# Aggiungere questi endpoint IN FONDO al file admin.py esistente,
+# prima dell'ultima riga. Non modificare nulla del resto del file.
+# ─────────────────────────────────────────────
+
+@router.get("/chat-audit")
+async def get_chat_audit(
+    request: Request,
+    page: int = 0,
+    page_size: int = 30,
+    utente: str = "",
+    data_da: str = "",
+    data_a: str = "",
+    solo_bloccate: bool = False,
+    admin=Depends(require_admin),
+):
+    """
+    Lista paginata delle sessioni chat per l'audit admin.
+
+    Filtri disponibili:
+      - utente:        email/nome (LIKE, case-insensitive)
+      - data_da/a:     range date ISO (YYYY-MM-DD)
+      - solo_bloccate: solo sessioni con almeno un messaggio bloccato
+
+    Ownership:
+      - SuperAdmin: vede tutte le sessioni
+      - Admin: vede solo le sessioni degli utenti che ha creato lui
+    """
+    from app.db.session import SessionLocal
+    from app.services.auth_service import get_admin_scope
+    from app.services.chat_history_service import get_audit_sessioni
+
+    db    = SessionLocal()
+    scope = get_admin_scope(admin, db)
+    db.close()
+
+    result = get_audit_sessioni(
+        page          = page,
+        page_size     = min(page_size, 50),
+        utente_filter = utente,
+        data_da       = data_da or None,
+        data_a        = data_a  or None,
+        solo_bloccate = solo_bloccate,
+        owner_filter  = scope["owner_filter"],
+    )
+
+    return result
+
+
+@router.get("/chat-audit/{session_uuid}")
+async def get_chat_session_detail(
+    session_uuid: str,
+    admin=Depends(require_admin),
+):
+    """
+    Dettaglio completo di una sessione: tutti i messaggi con metadati RAG.
+    Accessibile da Admin e SuperAdmin (senza restrizioni di ownership
+    sul contenuto — solo sulla lista, non sul dettaglio).
+    """
+    from app.services.chat_history_service import get_messaggi_sessione
+
+    detail = get_messaggi_sessione(
+        session_uuid          = session_uuid,
+        utente_id_richiedente = None,
+        is_admin              = True,
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Sessione non trovata.")
+    return detail
+
+
+@router.delete("/chat-audit/{session_uuid}")
+async def admin_delete_session(
+    session_uuid: str,
+    request: Request,
+    admin=Depends(require_admin),
+):
+    """
+    Elimina fisicamente una sessione e tutti i suoi messaggi.
+    Solo SuperAdmin. Admin normale può solo archiviare le proprie.
+    """
+    from app.services.auth_service import is_superadmin
+    from app.db.session import SessionLocal
+    from sqlalchemy import text
+
+    db = SessionLocal()
+    try:
+        if not is_superadmin(admin.utente_id, db):
+            raise HTTPException(
+                status_code=403,
+                detail="Solo il SuperAdmin può eliminare fisicamente le sessioni."
+            )
+
+        sess = db.execute(text(
+            "SELECT sessione_id FROM Chat_Sessione WHERE session_uuid = :uuid"
+        ), {"uuid": session_uuid}).fetchone()
+
+        if not sess:
+            raise HTTPException(status_code=404, detail="Sessione non trovata.")
+
+        # Elimina messaggi prima (FK), poi sessione
+        db.execute(text(
+            "DELETE FROM Log_Risposta WHERE sessione_id = :sid"
+        ), {"sid": sess.sessione_id})
+
+        db.execute(text(
+            "DELETE FROM Chat_Sessione WHERE sessione_id = :sid"
+        ), {"sid": sess.sessione_id})
+
+        db.commit()
+
+        _log(admin.utente_id, "chat_session_deleted",
+             {"session_uuid": session_uuid, "sessione_id": sess.sessione_id},
+             _ip(request))
+
+        return {"status": "deleted", "session_uuid": session_uuid}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        db.rollback()
+        logger.exception(f"admin_delete_session fallito: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        db.close()

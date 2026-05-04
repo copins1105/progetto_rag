@@ -36,7 +36,8 @@ origins = [
     "https://localhost:5173",      # ← AGGIUNGI
     "http://127.0.0.1:5173",
     "https://127.0.0.1:5173",
-    "https://mprlv9br-5173.euw.devtunnels.ms",
+    "https://mprlv9br-5173.euw.devtunnels.ms" ,#frontend in devtunnel
+    "https://mprlv9br-8080.euw.devtunnels.ms/", #backend in devtunnel
 ]
 # --- CORS ---
 app.add_middleware(
@@ -45,6 +46,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Set-Cookie"],# necessario per far funzionare i cookie HttpOnly cross-origin
 )
 
 # --- SERVIZI BASE ---
