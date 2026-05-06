@@ -504,6 +504,14 @@
 //      Ogni sessione è cliccabile e ripristina la chat in sola lettura.
 //      Il badge stelle CSAT appare sui messaggi bot.
 
+
+// src/pages/ChatPage.jsx
+// FIX link PDF, guard jailbreak only.
+// NEW: sidebar mostra storico sessioni reale dal DB (GET /api/v1/chat/sessions).
+//      Ogni sessione è cliccabile e ripristina la chat in sola lettura.
+//      Il badge stelle CSAT appare sui messaggi bot.
+// NEW: ripristino contesto backend via /chat/restore/ al click sulla sessione.
+
 import { useState, useEffect, useRef, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { useNavigate } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
@@ -522,8 +530,10 @@ const formatBotResponse = (text) => {
 }
 
 function buildPdfHref(src) {
-  if (!src?.link) return null
-  return `${BASE_SERVER_URL}${src.link}`
+  if (!src) return null
+  if (src.link) return `${BASE_SERVER_URL}${src.link}`
+  if (src.title) return `${BASE_SERVER_URL}/api/v1/admin/pdf/${encodeURIComponent(src.title)}`
+  return null
 }
 
 function buildDebugHref(chunk) {
@@ -630,7 +640,7 @@ function ProcessChildren({ children, sourceMap }) {
 }
 
 // ─── BotMessage con feedback CSAT ────────────────────────────
-function BotMessage({ text, sources, logId, authFetch }) {
+function BotMessage({ text, sources, logId, authFetch, isHistorical }) {
   const sourceMap    = buildSourceMap(sources)
   const cleanText    = formatBotResponse(text)
   const useInline    = hasInlineCitations(cleanText, sourceMap)
@@ -648,7 +658,8 @@ function BotMessage({ text, sources, logId, authFetch }) {
     } catch (e) { console.error('feedback error', e) }
   }
 
-  const Stars = () => (
+  // Non mostrare stelle sui messaggi storici (non hanno log_id utile)
+  const Stars = () => isHistorical ? null : (
     <div style={{ display:'flex', gap:3, marginTop:8, alignItems:'center' }}>
       <span style={{ fontSize:'0.65rem', color:'var(--text-muted)', marginRight:4 }}>
         Utile?
@@ -809,10 +820,7 @@ const SessionHistory = forwardRef(function SessionHistory(
     finally { setLoading(false) }
   }, [authFetch])
 
-  // Espone reload al componente padre
-  useImperativeHandle(ref, () => ({
-    reload: load
-  }), [load])
+  useImperativeHandle(ref, () => ({ reload: load }), [load])
 
   useEffect(() => { load() }, [load])
 
@@ -821,7 +829,7 @@ const SessionHistory = forwardRef(function SessionHistory(
     try {
       await authFetch(`/api/v1/chat/sessions/${uuid}`, { method: 'DELETE' })
       setSessions(prev => prev.filter(s => s.session_uuid !== uuid))
-    } catch { /* silenzioso */ }
+    } catch { }
   }
 
   if (sessions.length === 0 && !loading) return null
@@ -885,19 +893,29 @@ function RobotWatermark() {
       display: 'flex', alignItems: 'center', justifyContent: 'center',
       pointerEvents: 'none', zIndex: 0, overflow: 'hidden',
     }}>
-      <img
-        src={robotLogo}
-        alt=""
-        className="chat-robot-watermark"
-        style={{
-          width: 400, height: 400,
-          objectFit: 'contain',
-          userSelect: 'none', flexShrink: 0,
-        }}
+      <img src={robotLogo} alt="" className="chat-robot-watermark"
+        style={{ width: 400, height: 400, objectFit: 'contain', userSelect: 'none', flexShrink: 0 }}
       />
     </div>
   )
 }
+
+// ─────────────────────────────────────────────────────────────
+// HELPER: normalizza fonti dal formato DB al formato BotMessage
+// Il DB restituisce { titolo, link, pagina } oppure { documenti: [...] }
+// BotMessage si aspetta { title, link, page }
+// ─────────────────────────────────────────────────────────────
+function normalizeSources(raw) {
+  if (!raw || !Array.isArray(raw) || raw.length === 0) return []
+  return raw
+    .map(s => ({
+      title: s.titolo || s.title || '',
+      link:  s.link   || null,
+      page:  s.pagina ?? s.page ?? null,
+    }))
+    .filter(s => s.title)
+}
+
 // ─────────────────────────────────────────────────────────────
 // CHAT PAGE PRINCIPALE
 // ─────────────────────────────────────────────────────────────
@@ -911,14 +929,23 @@ export default function ChatPage() {
   const [debugOpen,    setDebugOpen]    = useState(false)
   const [lastDebug,    setLastDebug]    = useState(null)
   const [debugEnabled, setDebugEnabled] = useState(false)
-  // logIds mappa index messaggio → log_id per il CSAT
   const [logIds,       setLogIds]       = useState({})
-  const bottomRef = useRef(null)
+  // Tiene traccia di quanti messaggi sono "storici" (caricati dal DB)
+  // così BotMessage sa se mostrare le stelle CSAT o no
+  const [historicalCount, setHistoricalCount] = useState(0)
+  const bottomRef         = useRef(null)
   const sessionHistoryRef = useRef(null)
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isTyping])
+
+  // Reset del contatore storico quando si resetta la chat
+  const handleResetChat = useCallback(() => {
+    resetChat()
+    setHistoricalCount(0)
+    setLogIds({})
+  }, [resetChat])
 
   const sendMessage = async () => {
     if (!input.trim() || isTyping) return
@@ -938,11 +965,9 @@ export default function ChatPage() {
       })
       const data = await response.json()
 
-      // Indice del nuovo messaggio bot (dopo user che è già stato aggiunto)
       const botIdx = messages.length + 1
       addMessage({ role: 'bot', text: data.answer, sources: data.sources })
 
-      // Salva log_id se il backend lo restituisce (opzionale)
       if (data.log_id) {
         setLogIds(prev => ({ ...prev, [botIdx]: data.log_id }))
       }
@@ -965,31 +990,80 @@ export default function ChatPage() {
     navigate('/login')
   }
 
-  // Selezione di una sessione storica — la apre in sola lettura
+  // ─────────────────────────────────────────────────────────────
+  // handleSelectSession — ripristino sessione completo
+  //
+  // 1. Carica i messaggi visivi dal DB (GET /chat/sessions/:uuid)
+  // 2. Imposta il sessionId = UUID storico (loadSession)
+  // 3. Pre-riscalda il contesto nel backend (POST /chat/restore/:uuid)
+  //    fire-and-forget: se fallisce, il lazy load nel chat_endpoint
+  //    gestisce il ripristino al primo messaggio senza impatto UX
+  // ─────────────────────────────────────────────────────────────
   const handleSelectSession = useCallback(async (sess) => {
-  if (sess.session_uuid === sessionId) return
+    if (sess.session_uuid === sessionId) return
 
-  try {
-    const res  = await authFetch(`/api/v1/chat/sessions/${sess.session_uuid}`)
-    const data = await res.json()
+    try {
+      // ── Step 1: carica messaggi dal DB ──────────────────────
+      const res  = await authFetch(`/api/v1/chat/sessions/${sess.session_uuid}`)
+      const data = await res.json()
 
-    const INITIAL_MSG = {
-      role: 'bot',
-      text: 'Ciao, sono **Policy Navigator**. Posso aiutarti a trovare informazioni su policy aziendali, procedure e regolamenti. Come posso aiutarti?',
+      const INITIAL_MSG = {
+        role: 'bot',
+        text: 'Ciao, sono **Policy Navigator**. Posso aiutarti a trovare informazioni su policy aziendali, procedure e regolamenti. Come posso aiutarti?',
+      }
+
+      const msgs = [INITIAL_MSG]
+
+      for (const m of (data.messaggi || [])) {
+        msgs.push({ role: 'user', text: m.domanda })
+        // Normalizza le fonti dal formato DB al formato atteso da BotMessage
+        const rawSources = m.fonti || m.documenti || []
+        msgs.push({
+          role:    'bot',
+          text:    m.risposta,
+          sources: normalizeSources(rawSources),
+          // Flag per disabilitare le stelle CSAT sui messaggi storici
+          isHistorical: true,
+        })
+      }
+
+      // Messaggio di conferma ripristino
+      if (data.messaggi && data.messaggi.length > 0) {
+        msgs.push({
+          role: 'bot',
+          text: `✅ **Conversazione ripristinata** — ${data.messaggi.length} messaggi caricati. Puoi continuare a scrivere.`,
+          sources: [],
+          isHistorical: true,
+        })
+      }
+
+      // ── Step 2: aggiorna UI e sessionId ────────────────────
+      // historicalCount = tutti i msg caricati dal DB (incluso INITIAL_MSG)
+      // I nuovi messaggi avranno index >= historicalCount → non storici
+      setHistoricalCount(msgs.length)
+      setLogIds({})
+      loadSession(msgs, sess.session_uuid)
+
+      // ── Step 3: pre-riscalda il contesto nel backend ────────
+      // Fire-and-forget: non blocca l'UI
+      authFetch(`/api/v1/chat/restore/${sess.session_uuid}`, { method: 'POST' })
+        .then(r => r.json())
+        .then(result => {
+          console.debug(
+            `[session restore] ${sess.session_uuid}: ` +
+            `restored=${result.restored} msgs=${result.n_messages} ` +
+            `summary=${result.has_summary}`
+          )
+        })
+        .catch(err => {
+          // Silenzioso: il lazy load nel backend gestisce il fallimento
+          console.warn('[session restore] pre-warm fallito (lazy load attivo):', err)
+        })
+
+    } catch (e) {
+      console.error('Errore caricamento sessione:', e)
     }
-
-    const msgs = [INITIAL_MSG]
-    for (const m of (data.messaggi || [])) {
-      msgs.push({ role: 'user', text: m.domanda })
-      msgs.push({ role: 'bot',  text: m.risposta, sources: [] })
-    }
-
-    loadSession(msgs, sess.session_uuid)
-
-  } catch (e) {
-    console.error('Errore caricamento sessione:', e)
-  }
-}, [authFetch, sessionId, loadSession])
+  }, [authFetch, sessionId, loadSession])
 
   return (
     <div className="app-container">
@@ -1003,11 +1077,10 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <button className="new-chat-btn" onClick={resetChat}>
+        <button className="new-chat-btn" onClick={handleResetChat}>
           <span>＋</span> Nuova chat
         </button>
 
-        {/* ── Storico sessioni dal DB ── */}
         <div style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden' }}>
           <SessionHistory
             ref={sessionHistoryRef}
@@ -1056,16 +1129,12 @@ export default function ChatPage() {
             <span>↩</span> Esci
           </button>
 
-          {/* <div className="session-badge" style={{ marginTop:'8px' }}>
-            ID: {sessionId}
-          </div> */}
-
           <ThemeToggle />
         </div>
       </aside>
 
       <main className="chat-window">
-        <RobotWatermark /> 
+        <RobotWatermark />
         <div className="chat-topbar" style={{ position:'relative', zIndex:1 }}>
           <span className="topbar-title">Assistente documentale</span>
           <div style={{ display:'flex', alignItems:'center', gap:12 }}>
@@ -1093,6 +1162,8 @@ export default function ChatPage() {
                   sources={msg.sources}
                   logId={logIds[index]}
                   authFetch={authFetch}
+                  // I messaggi con index < historicalCount sono storici
+                  isHistorical={msg.isHistorical || index < historicalCount}
                 />
               ) : (
                 <div className="message-content">{msg.text}</div>

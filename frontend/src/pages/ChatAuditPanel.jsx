@@ -1,21 +1,38 @@
 // src/pages/ChatAuditPanel.jsx
-// Pannello audit sessioni chat per Admin e SuperAdmin.
-// Lista sessioni con filtri + dettaglio messaggi al click.
-//
-// FIX: la colonna destra non scorreva perché il flex container
-// non aveva minHeight: 0 e SessionDetail non restituiva sempre
-// un wrapper con height: "100%" e overflow: hidden.
+// FIX LINK CLICCABILI:
+// - DocBadge: costruisce URL del PDF da doc.link (se presente) oppure
+//   dal titolo come fallback → /api/v1/admin/pdf/{titolo}
+// - Aggiunge numero pagina come #page=N
+// - Scrollbar sinistra e destra già corrette dalla versione precedente
 
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../context/AuthContext";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
+const API_BASE = import.meta.env.VITE_API_URL || "https://127.0.0.1:8080";
+
+// Costruisce href completo per un documento.
+// Usa doc.link se presente, altrimenti ricostruisce dal titolo.
+// Aggiunge #page=N se disponibile.
+function buildDocHref(doc) {
+  let base = null;
+  if (doc.link) {
+    base = doc.link.startsWith("http") ? doc.link : `${API_BASE}${doc.link}`;
+  } else if (doc.titolo) {
+    base = `${API_BASE}/api/v1/admin/pdf/${encodeURIComponent(doc.titolo)}`;
+  }
+  if (!base) return null;
+  const page = doc.pagina ?? doc.page ?? null;
+  return page ? `${base}#page=${page}` : base;
+}
+
 const s = {
   root: { display: "flex", height: "100%", overflow: "hidden" },
   list: {
     width: 340, flexShrink: 0, display: "flex", flexDirection: "column",
-    borderRight: "1px solid var(--border)", background: "var(--surface)", overflow: "hidden",
+    minHeight: 0, borderRight: "1px solid var(--border)",
+    background: "var(--surface)", overflow: "hidden",
   },
   listHeader: { padding: "12px 14px", borderBottom: "1px solid var(--border)", flexShrink: 0 },
   listTitle: { fontSize: "0.85rem", fontWeight: 600, color: "var(--text)", marginBottom: 8 },
@@ -28,7 +45,7 @@ const s = {
   },
   filterGrid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 },
   checkRow: { display: "flex", alignItems: "center", gap: 6, fontSize: "0.72rem", color: "var(--text-muted)" },
-  sessioni: { flex: 1, overflowY: "auto", padding: "6px 8px" },
+  sessioni: { flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden", padding: "6px 8px" },
   sessione: (sel) => ({
     padding: "10px 12px", borderRadius: 8, marginBottom: 4, cursor: "pointer",
     background: sel ? "rgba(53,128,184,0.12)" : "transparent",
@@ -46,36 +63,17 @@ const s = {
     fontFamily: "'JetBrains Mono', monospace", ...c,
   }),
   sessDate: { fontSize: "0.65rem", color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace" },
-
-  // FIX: flex: 1 + minHeight: 0 è la coppia magica per far funzionare
-  // overflowY: auto nei figli di un flex container.
-  detail: {
-    flex: 1,
-    minHeight: 0,          // ← FIX CHIAVE
-    display: "flex",
-    flexDirection: "column",
-    overflow: "hidden",
-    background: "var(--bg)",
-  },
-
-  detailHeader: {
-    padding: "12px 18px", background: "var(--surface)",
-    borderBottom: "1px solid var(--border)", flexShrink: 0,
-  },
+  detail: { flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden", background: "var(--bg)" },
+  detailHeader: { padding: "12px 18px", background: "var(--surface)", borderBottom: "1px solid var(--border)", flexShrink: 0 },
   detailTitle: { fontSize: "0.88rem", fontWeight: 600, color: "var(--text)", marginBottom: 4 },
   detailMeta: { display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" },
   detailMessages: {
-    flex: 1,
-    minHeight: 0,          // ← FIX: senza questo overflowY: auto non funziona
-    overflowY: "auto",
-    padding: "16px 24px",
-    display: "flex",
-    flexDirection: "column",
-    gap: 16,
+    flex: 1, minHeight: 0, overflowY: "auto", overflowX: "hidden",
+    padding: "16px 24px", display: "flex", flexDirection: "column", gap: 16,
   },
   msgBlock: {
     background: "var(--surface)", border: "1px solid var(--border-strong)",
-    borderRadius: 10, overflow: "hidden",
+    borderRadius: 10, overflow: "hidden", flexShrink: 0,
   },
   msgQ: {
     padding: "10px 14px", background: "rgba(53,128,184,0.08)",
@@ -88,19 +86,21 @@ const s = {
     padding: "6px 14px 10px", borderTop: "1px solid var(--border)",
   },
   docsRow: {
-    padding: "6px 14px 10px", display: "flex", gap: 6, flexWrap: "wrap",
-    borderTop: "1px solid var(--border)",
+    padding: "8px 14px 10px", display: "flex", gap: 6, flexWrap: "wrap",
+    borderTop: "1px solid var(--border)", alignItems: "center",
   },
-  docTag: {
-    fontSize: "0.65rem", padding: "2px 8px", borderRadius: 20,
+  docTagBase: {
+    display: "inline-flex", alignItems: "center", gap: 3,
+    fontSize: "0.65rem", padding: "3px 9px", borderRadius: 20,
     background: "var(--accent-dim)", color: "var(--accent-bright)",
-    border: "1px solid var(--border-accent)", fontFamily: "'JetBrains Mono', monospace",
+    border: "1px solid var(--border-accent)",
+    fontFamily: "'JetBrains Mono', monospace",
+    transition: "background 0.15s, border-color 0.15s",
   },
   emptyState: {
-    flex: 1,
-    display: "flex", flexDirection: "column",
+    flex: 1, display: "flex", flexDirection: "column",
     alignItems: "center", justifyContent: "center",
-    color: "var(--text-muted)", gap: 10, padding: 40,
+    color: "var(--text-muted)", gap: 10, padding: 40, minHeight: 0,
   },
   pager: {
     display: "flex", justifyContent: "space-between", alignItems: "center",
@@ -138,10 +138,46 @@ function fmtDurata(sec) {
   return `${Math.floor(sec / 60)}m ${sec % 60}s`;
 }
 
-// ─── Singolo blocco messaggio ─────────────────────────────────
+// ─── DocBadge — badge/link per un documento ───────────────────────────────────
+function DocBadge({ doc }) {
+  const href  = buildDocHref(doc);
+  const page  = doc.pagina ?? doc.page ?? null;
+  const label = `📄 ${doc.titolo}${page ? ` · p.${page}` : ""}`;
+
+  if (href) {
+    return (
+      <a
+        href={href}
+        target="_blank"
+        rel="noreferrer"
+        style={{ ...s.docTagBase, textDecoration: "none", cursor: "pointer" }}
+        onMouseEnter={e => {
+          e.currentTarget.style.background = "rgba(53,128,184,0.28)";
+          e.currentTarget.style.borderColor = "var(--accent-light)";
+        }}
+        onMouseLeave={e => {
+          e.currentTarget.style.background = "var(--accent-dim)";
+          e.currentTarget.style.borderColor = "var(--border-accent)";
+        }}
+      >
+        {label}
+      </a>
+    );
+  }
+
+  // Nessun link disponibile — mostra come testo
+  return (
+    <span style={{ ...s.docTagBase, opacity: 0.65, cursor: "default" }}>
+      {label}
+    </span>
+  );
+}
+
+// ─── Singolo blocco messaggio ─────────────────────────────────────────────────
 function MsgBlock({ msg, idx }) {
   const [open, setOpen] = useState(idx === 0);
   const tipoColor = TIPO_COLORS[msg.tipo_risposta] || TIPO_COLORS.content;
+  const docs = msg.documenti || [];
 
   return (
     <div style={s.msgBlock}>
@@ -169,12 +205,13 @@ function MsgBlock({ msg, idx }) {
         )}
       </div>
 
-      {(msg.documenti || []).length > 0 && (
+      {/* FIX: DocBadge cliccabile con link al PDF */}
+      {docs.length > 0 && (
         <div style={s.docsRow}>
-          <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginRight: 4 }}>Docs:</span>
-          {msg.documenti.map((d, i) => (
-            <span key={i} style={s.docTag}>{d.titolo}</span>
-          ))}
+          <span style={{ fontSize: "0.65rem", color: "var(--text-muted)", flexShrink: 0, marginRight: 2 }}>
+            Fonti:
+          </span>
+          {docs.map((d, i) => <DocBadge key={i} doc={d} />)}
         </div>
       )}
 
@@ -201,9 +238,7 @@ function MsgBlock({ msg, idx }) {
   );
 }
 
-// ─── Dettaglio sessione (colonna dx) ─────────────────────────
-// FIX: ora restituisce SEMPRE un wrapper con display:flex + height:100%
-// in modo che il flex parent possa calcolare correttamente l'altezza.
+// ─── Dettaglio sessione (colonna dx) ─────────────────────────────────────────
 function SessionDetail({ session_uuid, onDelete, isSuperAdmin }) {
   const { authFetch } = useAuth();
   const [detail, setDetail]   = useState(null);
@@ -229,45 +264,43 @@ function SessionDetail({ session_uuid, onDelete, isSuperAdmin }) {
     setConfirm(false);
   };
 
-  // FIX: tutti i rami return usano lo stesso wrapper flex con height: "100%"
-  // così il div padre (s.detail) mantiene sempre il layout corretto.
+  const Wrapper = ({ children }) => (
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      {children}
+    </div>
+  );
 
   if (!session_uuid) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      <Wrapper>
         <div style={s.emptyState}>
           <div style={{ fontSize: "2rem", opacity: 0.2 }}>💬</div>
           <p style={{ fontSize: "0.8rem", textAlign: "center" }}>
             Seleziona una sessione per vedere i messaggi
           </p>
         </div>
-      </div>
+      </Wrapper>
     );
   }
 
   if (loading) {
     return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
+      <Wrapper>
         <div style={s.emptyState}>
           <div style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>Caricamento…</div>
         </div>
-      </div>
+      </Wrapper>
     );
   }
 
-  if (!detail) {
-    return (
-      <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }} />
-    );
-  }
+  if (!detail) return <Wrapper />;
 
   const nomeUtente = detail.utente_nome && detail.utente_cognome
     ? `${detail.utente_nome} ${detail.utente_cognome}`
     : detail.utente_email || "—";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
-      {/* Header fisso in cima */}
+    <Wrapper>
       <div style={s.detailHeader}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div style={{ ...s.detailTitle, flex: 1, marginRight: 12 }}>{detail.titolo || "Conversazione"}</div>
@@ -311,7 +344,6 @@ function SessionDetail({ session_uuid, onDelete, isSuperAdmin }) {
         </div>
       </div>
 
-      {/* Area messaggi scrollabile — flex:1 + minHeight:0 è la chiave */}
       <div style={s.detailMessages}>
         {(detail.messaggi || []).length === 0 ? (
           <div style={{ textAlign: "center", color: "var(--text-muted)", fontSize: "0.78rem", padding: 32 }}>
@@ -323,11 +355,11 @@ function SessionDetail({ session_uuid, onDelete, isSuperAdmin }) {
           ))
         )}
       </div>
-    </div>
+    </Wrapper>
   );
 }
 
-// ─── Riga sessione nella lista ────────────────────────────────
+// ─── Riga sessione nella lista ────────────────────────────────────────────────
 function SessRow({ sess, selected, onClick }) {
   const sel = selected?.session_uuid === sess.session_uuid;
   const nomeUtente = sess.utente_nome && sess.utente_cognome
@@ -367,21 +399,20 @@ function SessRow({ sess, selected, onClick }) {
   );
 }
 
-// ─── Panel principale ─────────────────────────────────────────
+// ─── Panel principale ─────────────────────────────────────────────────────────
 export default function ChatAuditPanel() {
   const { authFetch, user } = useAuth();
   const isSuperAdmin = user?.is_superadmin ?? false;
 
-  const [sessioni,    setSessioni]    = useState([]);
-  const [total,       setTotal]       = useState(0);
-  const [page,        setPage]        = useState(0);
-  const [loading,     setLoading]     = useState(false);
-  const [selected,    setSelected]    = useState(null);
-
-  const [fUtente,        setFUtente]        = useState("");
-  const [fDataDa,        setFDataDa]        = useState("");
-  const [fDataA,         setFDataA]         = useState("");
-  const [fSoloBloccate,  setFSoloBloccate]  = useState(false);
+  const [sessioni,      setSessioni]      = useState([]);
+  const [total,         setTotal]         = useState(0);
+  const [page,          setPage]          = useState(0);
+  const [loading,       setLoading]       = useState(false);
+  const [selected,      setSelected]      = useState(null);
+  const [fUtente,       setFUtente]       = useState("");
+  const [fDataDa,       setFDataDa]       = useState("");
+  const [fDataA,        setFDataA]        = useState("");
+  const [fSoloBloccate, setFSoloBloccate] = useState(false);
 
   const PAGE_SIZE = 30;
 
@@ -393,7 +424,6 @@ export default function ChatAuditPanel() {
       if (fDataDa)       params.set("data_da",       fDataDa);
       if (fDataA)        params.set("data_a",        fDataA);
       if (fSoloBloccate) params.set("solo_bloccate", "true");
-
       const res  = await authFetch(`/api/v1/admin/chat-audit?${params}`);
       const data = await res.json();
       setSessioni(data.sessioni || []);
@@ -406,11 +436,7 @@ export default function ChatAuditPanel() {
   useEffect(() => { fetchSessioni(0); }, [fetchSessioni]);
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-
-  const handleDelete = (uuid) => {
-    setSessioni(prev => prev.filter(s => s.session_uuid !== uuid));
-    setSelected(null);
-  };
+  const handleDelete = (uuid) => { setSessioni(prev => prev.filter(s => s.session_uuid !== uuid)); setSelected(null); };
 
   const btnGhost = {
     background: "none", border: "1px solid var(--border-strong)",
@@ -420,7 +446,6 @@ export default function ChatAuditPanel() {
 
   return (
     <div style={s.root}>
-      {/* ── Lista sx ── */}
       <div style={s.list}>
         <div style={s.listHeader}>
           <div style={s.listTitle}>
@@ -451,61 +476,33 @@ export default function ChatAuditPanel() {
               <label htmlFor="cb-bloccate">Solo sessioni con messaggi bloccati</label>
             </div>
             <div style={{ display: "flex", gap: 6 }}>
-              <button
-                style={{ ...btnGhost, flex: 1, background: "var(--accent)", color: "white", border: "none", fontWeight: 600 }}
-                onClick={() => fetchSessioni(0)}>
-                Filtra
-              </button>
-              <button style={btnGhost}
-                onClick={() => { setFUtente(""); setFDataDa(""); setFDataA(""); setFSoloBloccate(false); }}>
-                ✕
-              </button>
+              <button style={{ ...btnGhost, flex: 1, background: "var(--accent)", color: "white", border: "none", fontWeight: 600 }}
+                onClick={() => fetchSessioni(0)}>Filtra</button>
+              <button style={btnGhost} onClick={() => { setFUtente(""); setFDataDa(""); setFDataA(""); setFSoloBloccate(false); }}>✕</button>
               <button style={btnGhost} onClick={() => fetchSessioni(page)} title="Aggiorna">↻</button>
             </div>
           </div>
         </div>
 
         <div style={s.sessioni}>
-          {loading && (
-            <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)", fontSize: "0.78rem" }}>
-              Caricamento…
-            </div>
-          )}
-          {!loading && sessioni.length === 0 && (
-            <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)", fontSize: "0.78rem" }}>
-              Nessuna sessione trovata.
-            </div>
-          )}
+          {loading && <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)", fontSize: "0.78rem" }}>Caricamento…</div>}
+          {!loading && sessioni.length === 0 && <div style={{ padding: 20, textAlign: "center", color: "var(--text-muted)", fontSize: "0.78rem" }}>Nessuna sessione trovata.</div>}
           {!loading && sessioni.map(sess => (
-            <SessRow
-              key={sess.session_uuid}
-              sess={sess}
-              selected={selected}
-              onClick={() => setSelected(sess)}
-            />
+            <SessRow key={sess.session_uuid} sess={sess} selected={selected} onClick={() => setSelected(sess)} />
           ))}
         </div>
 
         {totalPages > 1 && (
           <div style={s.pager}>
-            <button style={s.pageBtn} disabled={page <= 0}
-              onClick={() => fetchSessioni(page - 1)}>← Prec.</button>
-            <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace" }}>
-              {page + 1} / {totalPages}
-            </span>
-            <button style={s.pageBtn} disabled={page >= totalPages - 1}
-              onClick={() => fetchSessioni(page + 1)}>Succ. →</button>
+            <button style={s.pageBtn} disabled={page <= 0} onClick={() => fetchSessioni(page - 1)}>← Prec.</button>
+            <span style={{ fontSize: "0.7rem", color: "var(--text-muted)", fontFamily: "'JetBrains Mono', monospace" }}>{page + 1} / {totalPages}</span>
+            <button style={s.pageBtn} disabled={page >= totalPages - 1} onClick={() => fetchSessioni(page + 1)}>Succ. →</button>
           </div>
         )}
       </div>
 
-      {/* ── Dettaglio dx ── */}
       <div style={s.detail}>
-        <SessionDetail
-          session_uuid={selected?.session_uuid}
-          onDelete={handleDelete}
-          isSuperAdmin={isSuperAdmin}
-        />
+        <SessionDetail session_uuid={selected?.session_uuid} onDelete={handleDelete} isSuperAdmin={isSuperAdmin} />
       </div>
     </div>
   );
