@@ -641,10 +641,8 @@ function ProcessChildren({ children, sourceMap }) {
 
 // ─── BotMessage con feedback CSAT ────────────────────────────
 function BotMessage({ text, sources, logId, authFetch, isHistorical }) {
-  const sourceMap    = buildSourceMap(sources)
-  const cleanText    = formatBotResponse(text)
-  const useInline    = hasInlineCitations(cleanText, sourceMap)
-  const singleSource = sources && sources.length === 1
+  const sourceMap = buildSourceMap(sources)
+  const cleanText = formatBotResponse(text)
   const [csat, setCsat] = useState(null)
 
   const submitCsat = async (value) => {
@@ -658,16 +656,14 @@ function BotMessage({ text, sources, logId, authFetch, isHistorical }) {
     } catch (e) { console.error('feedback error', e) }
   }
 
-  // Non mostrare stelle sui messaggi storici (non hanno log_id utile)
   const Stars = () => isHistorical ? null : (
     <div style={{ display:'flex', gap:3, marginTop:8, alignItems:'center' }}>
-      <span style={{ fontSize:'0.65rem', color:'var(--text-muted)', marginRight:4 }}>
-        Utile?
-      </span>
+      <span style={{ fontSize:'0.65rem', color:'var(--text-muted)', marginRight:4 }}>Utile?</span>
       {[1,2,3,4,5].map(n => (
         <button key={n} onClick={() => submitCsat(n)}
           style={{ background:'none', border:'none', cursor:'pointer',
-            fontSize:'0.9rem', padding:0, opacity: csat ? (csat === n ? 1 : 0.3) : 0.6,
+            fontSize:'0.9rem', padding:0,
+            opacity: csat ? (csat === n ? 1 : 0.3) : 0.6,
             transition:'opacity 0.15s' }}>
           ★
         </button>
@@ -676,17 +672,6 @@ function BotMessage({ text, sources, logId, authFetch, isHistorical }) {
     </div>
   )
 
-  if (!useInline || singleSource) {
-    return (
-      <>
-        <div className="message-content">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{cleanText}</ReactMarkdown>
-        </div>
-        {sources && sources.length > 0 && <SourcesFooter sources={sources} />}
-        <Stars />
-      </>
-    )
-  }
   return (
     <>
       <div className="message-content">
@@ -941,11 +926,18 @@ export default function ChatPage() {
   }, [messages, isTyping])
 
   // Reset del contatore storico quando si resetta la chat
-  const handleResetChat = useCallback(() => {
+  const handleResetChat = useCallback(async () => {
+    // Notifica backend di rimuovere la sessione dal chat_store
+    try {
+      await authFetch(`/api/v1/chat/reset`, {
+        method: 'POST',
+        body: JSON.stringify({ question: '', session_id: sessionId }),
+      })
+    } catch {}
     resetChat()
     setHistoricalCount(0)
     setLogIds({})
-  }, [resetChat])
+  }, [resetChat, sessionId, authFetch])
 
   const sendMessage = async () => {
     if (!input.trim() || isTyping) return

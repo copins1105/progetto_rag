@@ -806,6 +806,7 @@ def salva_messaggio(
         )
 
         # 2. Estrai documento_ids dai metadati dei chunk
+        # Già presente nel tuo codice — lascia invariato
         documento_ids: list[int] = []
         seen: set[int] = set()
         for doc in (source_docs or []):
@@ -819,6 +820,24 @@ def salva_messaggio(
                 except (ValueError, TypeError):
                     pass
 
+# AGGIUNGI QUESTO BLOCCO SUBITO DOPO
+        import re as _re
+        sources_json = []
+        seen_keys: set = set()
+        for doc in (source_docs or []):
+            m = doc.metadata
+            titolo = m.get("titolo_documento", "")
+            link   = m.get("anchor_link", "") or ""
+            pagina = str(m.get("pagina", "") or "")
+            if not pagina and link:
+                mp = _re.search(r'#page=(\d+)', link)
+                if mp:
+                    pagina = mp.group(1)
+            key = (titolo, pagina)
+            if key not in seen_keys and titolo:
+                seen_keys.add(key)
+                sources_json.append({"titolo": titolo, "link": link, "pagina": pagina})
+
         n_chunk = len(source_docs) if source_docs else 0
 
         # 3. Inserisci in Log_Risposta
@@ -828,12 +847,14 @@ def salva_messaggio(
                 testo_domanda, testo_risposta,
                 tempo_risposta_ms, tipo_risposta, bloccato,
                 n_chunk_recuperati, documento_ids,
+                sources_json,
                 timestamp_query
             ) VALUES (
                 :uid, :sid, :suuid,
                 :domanda, :risposta,
                 :ms, :tipo, :bloccato,
                 :n_chunk, :doc_ids,
+                CAST(:sources AS jsonb),
                 NOW()
             )
             RETURNING log_id
@@ -848,6 +869,7 @@ def salva_messaggio(
             "bloccato": bloccato,
             "n_chunk":  n_chunk,
             "doc_ids":  documento_ids if documento_ids else [],
+            "sources":  json.dumps(sources_json),
         })
         db.commit()
 
@@ -962,15 +984,18 @@ def get_messaggi_sessione(
         # Recupera messaggi dalla view
         messaggi = db.execute(text("""
             SELECT
-                log_id, testo_domanda, testo_risposta,
-                tempo_risposta_ms, timestamp_query,
-                feedback_csat, bloccato, tipo_risposta,
-                n_chunk_recuperati, documento_ids,
-                documenti_dettaglio
-            FROM v_chat_messaggi
-            WHERE sessione_id = :sid
-            ORDER BY timestamp_query ASC
+                lr.log_id, lr.testo_domanda, lr.testo_risposta,
+                lr.tempo_risposta_ms, lr.timestamp_query,
+                lr.feedback_csat, lr.bloccato, lr.tipo_risposta,
+                lr.n_chunk_recuperati, lr.documento_ids,
+                lr.sources_json,
+                vcm.documenti_dettaglio
+            FROM Log_Risposta lr
+            LEFT JOIN v_chat_messaggi vcm ON vcm.log_id = lr.log_id
+            WHERE lr.sessione_id = :sid
+            ORDER BY lr.timestamp_query ASC
         """), {"sid": sess.sessione_id}).fetchall()
+
 
         return {
             "sessione_id":    sess.sessione_id,
@@ -992,6 +1017,7 @@ def get_messaggi_sessione(
                     "tipo_risposta":      r.tipo_risposta,
                     "n_chunk":            r.n_chunk_recuperati,
                     "documento_ids":      r.documento_ids or [],
+                    "fonti":              r.sources_json or [],
                     "documenti":          r.documenti_dettaglio or [],
                 }
                 for r in messaggi
