@@ -1,0 +1,2 @@
+ALTER TABLE Log_Risposta
+ADD COLUMN IF NOT EXISTS sources_json JSONB DEFAULT '[]';
