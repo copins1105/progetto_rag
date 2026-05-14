@@ -330,38 +330,116 @@ async def _broadcast(job_id: str, message: str):
 # PIPELINE INGESTION (background thread)
 # ─────────────────────────────────────────────
 
-def _run_ingestion_sync(job_id: str, pdf_path: str, loop: asyncio.AbstractEventLoop,
-                         utente_id: int, ip_address: str):
+# def _run_ingestion_sync(job_id: str, pdf_path: str, loop: asyncio.AbstractEventLoop,
+#                          utente_id: int, ip_address: str):
+#     def emit(msg: str):
+#         asyncio.run_coroutine_threadsafe(_broadcast(job_id, msg), loop)
+
+#     filename = Path(pdf_path).name
+#     try:
+#         emit(f"▶ Avvio pipeline: {filename}")
+
+#         from app.services.marker_service import converti_pdf
+#         result  = converti_pdf(pdf_path, str(OUTPUT_DIR), emit=emit)
+#         md_raw  = result["md_raw"]
+
+#         from app.services.postprocessor_service import processa_markdown
+#         md_fixed = processa_markdown(md_raw_path=md_raw, output_dir=str(OUTPUT_DIR),
+#                                      pdf_path=pdf_path, emit=emit)
+
+#         from app.services.chunker_service import chunking_e_indicizzazione
+#         chunks_data = chunking_e_indicizzazione(md_path=md_fixed, output_dir=str(OUTPUT_DIR), emit=emit)
+
+#         n_rag = chunks_data["documento"]["n_frammenti_rag"]
+#         emit("🎉 Pipeline completata! Usa il loader per indicizzare in ChromaDB.")
+#         _jobs[job_id]["status"] = "done"
+#         _log(utente_id, "doc_ingestion", {"filename": filename, "n_frammenti_rag": n_rag}, ip_address)
+
+#     except Exception as e:
+#         logger.exception(f"Ingestion fallita per {filename}")
+#         emit(f"❌ Errore pipeline: {e}")
+#         _jobs[job_id]["status"] = "error"
+#         _log(utente_id, "doc_ingestion", {"filename": filename, "errore": str(e)}, ip_address, esito="error")
+
+
+# ═══════════════════════════════════════════════════════════════════
+# SOSTITUISCI _run_ingestion_sync in backend/app/api/v1/admin.py
+# ═══════════════════════════════════════════════════════════════════
+#
+# Questa funzione legge ACTIVE_CONFIG.pipeline e sceglie
+# automaticamente la pipeline giusta. Zero if/else sparsi.
+# ═══════════════════════════════════════════════════════════════════
+
+def _run_ingestion_sync(
+    job_id: str,
+    pdf_path: str,
+    loop,
+    utente_id: int,
+    ip_address: str,
+):
+    import asyncio
+    from app.core.db_config import ACTIVE_CONFIG
+
     def emit(msg: str):
         asyncio.run_coroutine_threadsafe(_broadcast(job_id, msg), loop)
 
     filename = Path(pdf_path).name
+    pipeline = ACTIVE_CONFIG.pipeline
+
     try:
-        emit(f"▶ Avvio pipeline: {filename}")
+        emit(f"▶ Pipeline [{pipeline.upper()}]: {filename}")
 
-        from app.services.marker_service import converti_pdf
-        result  = converti_pdf(pdf_path, str(OUTPUT_DIR), emit=emit)
-        md_raw  = result["md_raw"]
+        if pipeline == "mistral":
+            # ── Pipeline Mistral OCR (nuova) ──────────────────
+            from app.services.mistral_ocr_service import processa_pdf_con_mistral
+            chunks_data = processa_pdf_con_mistral(
+                pdf_path   = pdf_path,
+                output_dir = str(OUTPUT_DIR),
+                emit       = emit,
+            )
+            n_rag = chunks_data["documento"]["n_frammenti_rag"]
 
-        from app.services.postprocessor_service import processa_markdown
-        md_fixed = processa_markdown(md_raw_path=md_raw, output_dir=str(OUTPUT_DIR),
-                                     pdf_path=pdf_path, emit=emit)
+        else:
+            # ── Pipeline Marker (originale) ───────────────────
+            from app.services.marker_service import converti_pdf
+            result  = converti_pdf(pdf_path, str(OUTPUT_DIR), emit=emit)
+            md_raw  = result["md_raw"]
 
-        from app.services.chunker_service import chunking_e_indicizzazione
-        chunks_data = chunking_e_indicizzazione(md_path=md_fixed, output_dir=str(OUTPUT_DIR), emit=emit)
+            from app.services.postprocessor_service import processa_markdown
+            md_fixed = processa_markdown(
+                md_raw_path = md_raw,
+                output_dir  = str(OUTPUT_DIR),
+                pdf_path    = pdf_path,
+                emit        = emit,
+            )
 
-        n_rag = chunks_data["documento"]["n_frammenti_rag"]
+            from app.services.chunker_service import chunking_e_indicizzazione
+            chunks_data = chunking_e_indicizzazione(
+                md_path    = md_fixed,
+                output_dir = str(OUTPUT_DIR),
+                emit       = emit,
+            )
+            n_rag = chunks_data["documento"]["n_frammenti_rag"]
+
         emit("🎉 Pipeline completata! Usa il loader per indicizzare in ChromaDB.")
         _jobs[job_id]["status"] = "done"
-        _log(utente_id, "doc_ingestion", {"filename": filename, "n_frammenti_rag": n_rag}, ip_address)
+        _log(
+            utente_id, "doc_ingestion",
+            {"filename": filename, "pipeline": pipeline, "n_frammenti_rag": n_rag},
+            ip_address,
+        )
 
     except Exception as e:
-        logger.exception(f"Ingestion fallita per {filename}")
-        emit(f"❌ Errore pipeline: {e}")
+        logger.exception(f"Ingestion [{pipeline}] fallita per {filename}")
+        emit(f"❌ Errore pipeline [{pipeline}]: {e}")
         _jobs[job_id]["status"] = "error"
-        _log(utente_id, "doc_ingestion", {"filename": filename, "errore": str(e)}, ip_address, esito="error")
-
-
+        _log(
+            utente_id, "doc_ingestion",
+            {"filename": filename, "pipeline": pipeline, "errore": str(e)},
+            ip_address,
+            esito="error",
+        )
+        
 # ─────────────────────────────────────────────
 # ENDPOINT: avvia ingestion
 # ─────────────────────────────────────────────
