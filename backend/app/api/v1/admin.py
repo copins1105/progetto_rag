@@ -16,6 +16,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import text as _text
 
 from app.services.auth_service import require_admin, get_admin_scope
+from app.core.db_config import ACTIVE_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -25,12 +26,13 @@ router = APIRouter(prefix="/api/v1/admin", tags=["admin"])
 # CONFIGURAZIONE
 # ─────────────────────────────────────────────
 
-PDF_DIR    = Path(os.getenv("PDF_DIR",    "data"))
-OUTPUT_DIR = Path(os.getenv("OUTPUT_DIR", "output_json"))
-CHUNKS_DIR = Path(os.getenv("CHUNKS_DIR", str(Path("chunks"))))
+PDF_DIR    = Path(os.getenv("PDF_DIR", "data"))
+OUTPUT_DIR = Path(ACTIVE_CONFIG.output_dir)
+CHUNKS_DIR = Path(ACTIVE_CONFIG.chunks_dir)
 
 PDF_DIR.mkdir(parents=True, exist_ok=True)
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+CHUNKS_DIR.mkdir(parents=True, exist_ok=True)
 
 # ─────────────────────────────────────────────
 # STATO IN-MEMORY

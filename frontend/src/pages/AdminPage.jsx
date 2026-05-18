@@ -6,7 +6,7 @@
 // import ActivityLogPanel      from './ActivityLogPanel'
 // import PermissionMatrixPanel from './PermissionMatrixPanel'
 // import logo from '../assets/Logo Exprivia pulito.png'
-
+// import ChatAuditPanel from './ChatAuditPanel'
 // // ─── Icone SVG inline ─────────────────────────────────────────
 // const Icon = {
 //   docs: (
@@ -43,6 +43,12 @@
 //       <polyline points="15 18 9 12 15 6"/>
 //     </svg>
 //   ),
+//   chat: (
+//     <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+//       stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+//       <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+//     </svg>
+//   ),
 // }
 
 // // ─── Definizione sezioni ──────────────────────────────────────
@@ -51,7 +57,9 @@
 //   { id: 'users',       label: 'Utenti',    icon: Icon.users,       perm: 'tab_users' },
 //   { id: 'log',         label: 'Log',       icon: Icon.log,         perm: 'tab_log' },
 //   { id: 'permissions', label: 'Permessi',  icon: Icon.permissions, perm: 'tab_permissions' },
+//   { id: 'chat_audit',  label: 'Chat',      icon: Icon.chat,        perm: 'chat_audit_view' }, // ← nuovo
 // ]
+
 
 // export default function AdminPage() {
 //   const navigate = useNavigate()
@@ -220,6 +228,13 @@
 //             <PermissionMatrixPanel />
 //           </FullPageSection>
 //         )}
+
+//         {activeSection === 'chat_audit' && (
+//           <FullPageSection noPadding>
+//             <ChatAuditPanel />
+//           </FullPageSection>
+//         )}
+        
 //       </main>
 //     </div>
 //   )
@@ -249,12 +264,10 @@
 // }
 
 
-// src/pages/AdminPage.jsx
-// Aggiunta tab "Ownership" visibile solo al SuperAdmin.
 
 // src/pages/AdminPage.jsx
-// Layout admin: navbar orizzontale con logo Exprivia in topbar.
-// Documenti | Utenti | Log | Permessi
+// RESPONSIVE UPDATE: added className hooks for media queries,
+// mobile-friendly nav with horizontal scroll, collapsible panels.
 
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
@@ -265,6 +278,7 @@ import ActivityLogPanel      from './ActivityLogPanel'
 import PermissionMatrixPanel from './PermissionMatrixPanel'
 import logo from '../assets/Logo Exprivia pulito.png'
 import ChatAuditPanel from './ChatAuditPanel'
+
 // ─── Icone SVG inline ─────────────────────────────────────────
 const Icon = {
   docs: (
@@ -309,25 +323,20 @@ const Icon = {
   ),
 }
 
-// ─── Definizione sezioni ──────────────────────────────────────
 const SECTIONS = [
   { id: 'docs',        label: 'Documenti', icon: Icon.docs,        perm: 'tab_ingestion' },
   { id: 'users',       label: 'Utenti',    icon: Icon.users,       perm: 'tab_users' },
   { id: 'log',         label: 'Log',       icon: Icon.log,         perm: 'tab_log' },
   { id: 'permissions', label: 'Permessi',  icon: Icon.permissions, perm: 'tab_permissions' },
-  { id: 'chat_audit',  label: 'Chat',      icon: Icon.chat,        perm: 'chat_audit_view' }, // ← nuovo
+  { id: 'chat_audit',  label: 'Chat',      icon: Icon.chat,        perm: 'chat_audit_view' },
 ]
-
 
 export default function AdminPage() {
   const navigate = useNavigate()
   const { user, hasPermission } = useAuth()
 
   const visibleSections = SECTIONS.filter(s => !s.perm || hasPermission(s.perm))
-
-  const [activeSection, setActiveSection] = useState(
-    visibleSections[0]?.id ?? 'docs'
-  )
+  const [activeSection, setActiveSection] = useState(visibleSections[0]?.id ?? 'docs')
 
   const activeLabel = SECTIONS.find(s => s.id === activeSection)?.label ?? ''
 
@@ -344,58 +353,68 @@ export default function AdminPage() {
     }}>
 
       {/* ══ TOPBAR ══ */}
-      <header style={{
-        display: 'flex',
-        alignItems: 'center',
-        padding: '0 20px',
-        height: 54,
-        background: 'var(--surface)',
-        borderBottom: '1px solid var(--border-strong)',
-        flexShrink: 0,
-        gap: 0,
-        position: 'relative',
-        zIndex: 20,
-        boxShadow: 'var(--shadow-sm)',
-      }}>
-
-        {/* Brand con logo Exprivia */}
-        <div className="admin-topbar-left" style={{
-          paddingRight: 20,
-          borderRight: '1px solid var(--border-strong)',
-          marginRight: 8,
+      <header
+        className="admin-topbar-area"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          padding: '0 20px',
+          height: 54,
+          background: 'var(--surface)',
+          borderBottom: '1px solid var(--border-strong)',
           flexShrink: 0,
+          gap: 0,
+          position: 'relative',
+          zIndex: 20,
+          boxShadow: 'var(--shadow-sm)',
+        }}
+      >
+        {/* Brand */}
+        <div className="admin-topbar-left" style={{
+          paddingRight: 16,
+          borderRight: '1px solid var(--border-strong)',
+          marginRight: 0,
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 10,
         }}>
-          <img
-            src={logo}
-            alt="Exprivia"
-            className="exprivia-logo-topbar"
-          />
+          <img src={logo} alt="Exprivia" className="exprivia-logo-topbar" />
           <div className="admin-topbar-separator" />
           <span style={{
             fontSize: '0.84rem', fontWeight: 700,
             color: 'var(--text)', letterSpacing: '-0.01em',
+            whiteSpace: 'nowrap',
           }}>
             Policy Navigator
           </span>
           <span className="admin-topbar-badge">Admin</span>
         </div>
 
-        {/* Nav tabs */}
-        <nav style={{ display: 'flex', alignItems: 'stretch', flex: 1, height: '100%' }}>
+        {/* Nav tabs — horizontally scrollable */}
+        <nav className="admin-nav-tabs" style={{
+          display: 'flex',
+          alignItems: 'stretch',
+          flex: 1,
+          height: '100%',
+          overflowX: 'auto',
+          overflowY: 'hidden',
+          scrollbarWidth: 'none',
+          msOverflowStyle: 'none',
+        }}>
           {visibleSections.map(sec => {
             const isActive = activeSection === sec.id
             return (
               <button
                 key={sec.id}
+                className="admin-nav-tab-btn"
                 onClick={() => setActiveSection(sec.id)}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 7,
                   padding: '0 18px',
                   background: 'none',
                   border: 'none',
-                  borderBottom: isActive
-                    ? '2px solid var(--accent)'
-                    : '2px solid transparent',
+                  borderBottom: isActive ? '2px solid var(--accent)' : '2px solid transparent',
                   color: isActive ? 'var(--text)' : 'var(--text-muted)',
                   cursor: 'pointer',
                   fontFamily: 'inherit',
@@ -404,6 +423,7 @@ export default function AdminPage() {
                   transition: 'color 0.15s, border-color 0.15s',
                   whiteSpace: 'nowrap',
                   borderRadius: 0,
+                  flexShrink: 0,
                 }}
               >
                 <span style={{ opacity: isActive ? 1 : 0.6 }}>{sec.icon}</span>
@@ -416,7 +436,7 @@ export default function AdminPage() {
         {/* Right: user + back */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0, paddingLeft: 12 }}>
           {user && (
-            <div style={{
+            <div className="admin-user-label" style={{
               fontSize: '0.72rem', color: 'var(--text-muted)',
               fontFamily: "'JetBrains Mono', monospace",
               maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -429,13 +449,14 @@ export default function AdminPage() {
             className="back-to-chat-btn"
             style={{ display: 'flex', alignItems: 'center', gap: 5 }}
           >
-            {Icon.back} Chat
+            {Icon.back}
+            <span style={{ whiteSpace: 'nowrap' }}>Chat</span>
           </button>
         </div>
       </header>
 
       {/* ══ BREADCRUMB ══ */}
-      <div style={{
+      <div className="admin-breadcrumb" style={{
         display: 'flex', alignItems: 'center', gap: 8,
         padding: '0 20px',
         height: 34,
@@ -468,7 +489,7 @@ export default function AdminPage() {
 
         {/* Utenti */}
         {activeSection === 'users' && (
-          <FullPageSection>
+          <FullPageSection className="user-management-panel">
             <UserManagementPanel />
           </FullPageSection>
         )}
@@ -487,19 +508,19 @@ export default function AdminPage() {
           </FullPageSection>
         )}
 
+        {/* Chat Audit */}
         {activeSection === 'chat_audit' && (
           <FullPageSection noPadding>
             <ChatAuditPanel />
           </FullPageSection>
         )}
-        
+
       </main>
     </div>
   )
 }
 
-// ─── Wrapper sezioni a pagina piena ────────────────────────────
-function FullPageSection({ children, noPadding = false }) {
+function FullPageSection({ children, noPadding = false, className = '' }) {
   return (
     <div style={{
       display: 'flex',
@@ -507,14 +528,17 @@ function FullPageSection({ children, noPadding = false }) {
       height: '100%',
       overflow: 'hidden',
     }}>
-      <div style={{
-        flex: 1,
-        overflow: noPadding ? 'hidden' : 'auto',
-        padding: noPadding ? 0 : '24px 32px',
-        display: noPadding ? 'flex' : 'block',
-        flexDirection: noPadding ? 'column' : undefined,
-        minHeight: 0,
-      }}>
+      <div
+        className={className}
+        style={{
+          flex: 1,
+          overflow: noPadding ? 'hidden' : 'auto',
+          padding: noPadding ? 0 : '24px 32px',
+          display: noPadding ? 'flex' : 'block',
+          flexDirection: noPadding ? 'column' : undefined,
+          minHeight: 0,
+        }}
+      >
         {children}
       </div>
     </div>
