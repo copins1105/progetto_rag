@@ -51,6 +51,7 @@ USE_HYDE          = True
 class AgentState(TypedDict):
     question:              str
     retrieval_query:       str
+    hyde_mode:             bool          # ← aggiungi questa riga
     context:               str
     source_docs:           List[Document]
     chunk_page_map:        dict
@@ -85,6 +86,27 @@ _INJECTION_RE = re.compile('|'.join([
     r'\{\{.*?\}\}',
     r'----+\s*(system|human|assistant)',
 ]), re.IGNORECASE)
+
+_META_CONV_RE = re.compile(
+    r'\b('
+    r'di cosa (abbiamo|hai) parlato|cosa (abbiamo|hai) detto|'
+    r'riassumi (la nostra |questa )?conversazione|'
+    r'ricordi (cosa|di cosa)|'
+    r'cosa (mi hai|ti ho) (detto|chiesto|risposto)|'
+    r'ripeti (quello che|ciò che)|'
+    r'torna (all[ao]|su[l]?la?) (precedente|ultima)|'
+    r'nella (sessione|chat) (precedente|scorsa)|'
+    r'prima (mi hai|hai) (detto|risposto)|'
+    r'continua (da dove|dal punto)'
+    r')\b',
+    re.IGNORECASE,
+)
+
+_MSG_NO_CONTEXT = (
+    "Non ho memoria di conversazioni precedenti: ogni sessione "
+    "parte da zero. Se vuoi, puoi farmi una nuova domanda sulle "
+    "policy aziendali, procedure o regolamenti."
+)
 
 _DOC_TYPE_RE = {
     "manuale": re.compile(r'\b(manuale|istruzion|procedur|operativ|tecnic)\w*\b', re.IGNORECASE),
@@ -449,6 +471,15 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             return {**state, "blocked": True, "block_reason": _MSG_BLOCKED,
                     "is_courtesy": False, "courtesy_answer": ""}
 
+        # ── NUOVO: domande meta-conversazionali senza history ──────
+        # Se l'utente chiede "di cosa abbiamo parlato?" ma la history
+        # è vuota (sessione nuova), non c'è contesto da recuperare.
+        # Rispondiamo subito senza passare al retriever (che altrimenti
+        # cercherebbe nei documenti aziendali e risponderebbe inventando).
+        if _META_CONV_RE.search(q) and not state.get("history"):
+            return {**state, "blocked": False, "is_courtesy": True,
+                    "courtesy_answer": _MSG_NO_CONTEXT}
+
         verdict = "NORMALE"
         try:
             verdict = _courtesy_chain.invoke({"question": q}).strip().upper()
@@ -461,6 +492,20 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
 
         return {**state, "blocked": False, "is_courtesy": False, "courtesy_answer": ""}
 
+    # def query_agent(state: AgentState) -> AgentState:
+    #     q       = state["question"]
+    #     summary = state.get("conversation_summary", "")
+    #     hyde_input = f"Contesto: {summary}\nDomanda: {q}" if summary else q
+
+    #     if USE_HYDE:
+    #         try:
+    #             hyde_text = _hyde_chain.invoke({"question": hyde_input}).strip()
+    #             if hyde_text and len(hyde_text) > 20:
+    #                 return {**state, "retrieval_query": hyde_text}
+    #         except Exception as e:
+    #             logger.warning(f"[query_agent] HyDE fallito: {e} — uso domanda originale")
+    #     return {**state, "retrieval_query": q}
+
     def query_agent(state: AgentState) -> AgentState:
         q       = state["question"]
         summary = state.get("conversation_summary", "")
@@ -470,10 +515,17 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             try:
                 hyde_text = _hyde_chain.invoke({"question": hyde_input}).strip()
                 if hyde_text and len(hyde_text) > 20:
-                    return {**state, "retrieval_query": hyde_text}
+                    # HyDE genera testo documento → viene embeddato come documento
+                    # tramite embed_hyde (senza prefisso Instruct).
+                    # Salviamo il testo grezzo: il retriever lo riceverà e
+                    # dovrà usare embed_hyde invece di embed_query.
+                    # Usiamo un marker nel testo per distinguerlo lato retriever.
+                    return {**state, "retrieval_query": hyde_text, "hyde_mode": True}
             except Exception as e:
                 logger.warning(f"[query_agent] HyDE fallito: {e} — uso domanda originale")
-        return {**state, "retrieval_query": q}
+
+        # Query diretta → embed_query anteporrà il prefisso Instruct
+        return {**state, "retrieval_query": q, "hyde_mode": False}
 
     def routing_agent(state: AgentState) -> AgentState:
         """
@@ -507,15 +559,59 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
 
         return {**state, "filter_titles": filter_titles}
 
+    # def retrieval_agent(state: AgentState) -> AgentState:
+    #     query         = state["retrieval_query"]
+    #     filter_titles = state.get("filter_titles")
+    #     try:
+    #         docs               = _get_retriever(filter_titles).invoke(query)
+    #         context, page_map  = format_docs(docs)
+    #     except Exception as e:
+    #         logger.error(f"[retrieval_agent] Errore: {e}")
+    #         docs, context, page_map = [], "", {}
+    #     return {**state, "context": context, "source_docs": docs,
+    #             "chunk_page_map": page_map, "context_relevant": False}
+
+
     def retrieval_agent(state: AgentState) -> AgentState:
         query         = state["retrieval_query"]
         filter_titles = state.get("filter_titles")
+        hyde_mode     = state.get("hyde_mode", False)
+
         try:
-            docs               = _get_retriever(filter_titles).invoke(query)
-            context, page_map  = format_docs(docs)
+            retriever = _get_retriever(filter_titles)
+
+            if hyde_mode:
+                # HyDE: il testo è un documento simulato, non una query.
+                # Usiamo embed_hyde (senza prefisso Instruct) per l'embedding
+                # vettoriale, poi combiniamo con BM25 sulla domanda originale.
+                from langchain_core.documents import Document as _Doc
+                ai = retriever.retrievers[1].vectorstore.embeddings  # AIService
+
+                hyde_vector   = ai.embed_hyde(query)
+                vector_docs   = retriever.retrievers[1].vectorstore.similarity_search_by_vector(
+                    hyde_vector, k=_RET_K
+                )
+                # BM25 usa la domanda originale (più precisa per keyword matching)
+                bm25_docs     = retriever.retrievers[0].invoke(state["question"])
+
+                # Fusione RRF manuale
+                seen, docs = set(), []
+                for d in vector_docs + bm25_docs:
+                    key = d.page_content[:80]
+                    if key not in seen:
+                        seen.add(key)
+                        docs.append(d)
+                docs = docs[:_RET_K]
+            else:
+                # Query normale: embed_query antepone il prefisso Instruct
+                docs = retriever.invoke(query)
+
+            context, page_map = format_docs(docs)
+
         except Exception as e:
             logger.error(f"[retrieval_agent] Errore: {e}")
             docs, context, page_map = [], "", {}
+
         return {**state, "context": context, "source_docs": docs,
                 "chunk_page_map": page_map, "context_relevant": False}
 
@@ -537,17 +633,50 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
 
         return {**state, "context_relevant": relevant}
 
+    # def fallback_agent(state: AgentState) -> AgentState:
+    #     q     = state["question"]
+    #     retry = state["retry_count"] + 1
+
+    #     # FIX v5: al secondo retry SEMPRE senza filtro + query originale
+    #     # (non riphrasare, potrebbe allontanarsi dal termine esatto)
+    #     if retry >= MAX_RETRIES:
+    #         filter_titles = None
+    #         rephrased     = q
+    #     else:
+    #         filter_titles = None  # rimuovi sempre il filtro al primo retry
+    #         rephrased     = q
+    #         try:
+    #             r = _rephrase_chain.invoke({"question": q}).strip()
+    #             if r and r.lower() != q.lower():
+    #                 rephrased = r
+    #         except Exception:
+    #             pass
+
+    #     try:
+    #         docs              = _get_retriever(filter_titles).invoke(rephrased)
+    #         context, page_map = format_docs(docs)
+    #     except Exception as e:
+    #         logger.error(f"[fallback_agent] Errore: {e}")
+    #         docs, context, page_map = [], "", {}
+
+    #     return {**state,
+    #             "context":          context,
+    #             "source_docs":      docs,
+    #             "chunk_page_map":   page_map,
+    #             "retry_count":      retry,
+    #             "retrieval_query":  rephrased,
+    #             "filter_titles":    filter_titles,
+    #             "context_relevant": False}
+
     def fallback_agent(state: AgentState) -> AgentState:
         q     = state["question"]
         retry = state["retry_count"] + 1
 
-        # FIX v5: al secondo retry SEMPRE senza filtro + query originale
-        # (non riphrasare, potrebbe allontanarsi dal termine esatto)
         if retry >= MAX_RETRIES:
             filter_titles = None
             rephrased     = q
         else:
-            filter_titles = None  # rimuovi sempre il filtro al primo retry
+            filter_titles = None
             rephrased     = q
             try:
                 r = _rephrase_chain.invoke({"question": q}).strip()
@@ -570,6 +699,7 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
                 "retry_count":      retry,
                 "retrieval_query":  rephrased,
                 "filter_titles":    filter_titles,
+                "hyde_mode":        False,          # ← fallback usa sempre query diretta
                 "context_relevant": False}
 
     def answer_agent(state: AgentState) -> AgentState:
@@ -691,23 +821,41 @@ def create_rag_chain(llm, retriever, available_titles: List[str] = None):
             self._graph = compiled_graph
 
         def invoke(self, inputs: dict, config: dict = None) -> "FakeAIMessage":
+            # initial: AgentState = {
+            #     "question":             inputs.get("question", ""),
+            #     "retrieval_query":      inputs.get("question", ""),
+            #     "context":              "",
+            #     "source_docs":          [],
+            #     "chunk_page_map":       {},
+            #     "answer":               "",
+            #     "history":              inputs.get("history", []),
+            #     "blocked":              False,
+            #     "block_reason":         "",
+            #     "retry_count":          0,
+            #     "is_courtesy":          False,
+            #     "courtesy_answer":      "",
+            #     "context_relevant":     False,
+            #     "filter_titles":        None,
+            #     "conversation_summary": inputs.get("conversation_summary", ""),
+            # }
             initial: AgentState = {
-                "question":             inputs.get("question", ""),
-                "retrieval_query":      inputs.get("question", ""),
-                "context":              "",
-                "source_docs":          [],
-                "chunk_page_map":       {},
-                "answer":               "",
-                "history":              inputs.get("history", []),
-                "blocked":              False,
-                "block_reason":         "",
-                "retry_count":          0,
-                "is_courtesy":          False,
-                "courtesy_answer":      "",
-                "context_relevant":     False,
-                "filter_titles":        None,
-                "conversation_summary": inputs.get("conversation_summary", ""),
-            }
+                    "question":             inputs.get("question", ""),
+                    "retrieval_query":      inputs.get("question", ""),
+                    "hyde_mode":            False,                        # ← aggiungi
+                    "context":              "",
+                    "source_docs":          [],
+                    "chunk_page_map":       {},
+                    "answer":               "",
+                    "history":              inputs.get("history", []),
+                    "blocked":              False,
+                    "block_reason":         "",
+                    "retry_count":          0,
+                    "is_courtesy":          False,
+                    "courtesy_answer":      "",
+                    "context_relevant":     False,
+                    "filter_titles":        None,
+                    "conversation_summary": inputs.get("conversation_summary", ""),
+                }
             result = self._graph.invoke(initial, config=config)
             return FakeAIMessage(
                 content=result["answer"],

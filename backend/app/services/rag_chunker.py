@@ -518,81 +518,119 @@ def _processa_tabelle_nel_testo(testo: str, breadcrumb_tabella: str = '') -> str
     return '\n'.join(risultato)
 
 
-def prepara_testo_embedding(testo: str, breadcrumb: str = '', keep_bold: bool = True, documento_id: str = '') -> str:
+# def prepara_testo_embedding(testo: str, breadcrumb: str = '', keep_bold: bool = True, documento_id: str = '') -> str:
+#     """
+#     Prepara il testo_embedding nel formato gold standard per EmbeddingGemma.
+
+#     Struttura output:
+#     ─────────────────────────────────────────────────────────
+#     Documento: {documento_id} | title: {breadcrumb} | text: {testo con Markdown preservato}
+#     ─────────────────────────────────────────────────────────
+
+#     Il prefisso "Documento:" permette al retriever di filtrare per fonte e
+#     contestualizza semanticamente il frammento nell'embedding space.
+
+#     Principi applicati (da documentazione EmbeddingGemma + best practice):
+
+#     1. MARKDOWN PRESERVATO — bold, italic, liste, heading nel testo
+#        EmbeddingGemma è addestrato su GitHub/docs e capisce nativamenete
+#        il Markdown; rimuoverlo degrada la qualità semantica.
+
+#     2. TABELLE → formato Markdown normalizzato (NON testo lineare)
+#        - Celle vuote / trattini → "N/D" (evita token semanticamente vuoti)
+#        - Colonne vuote eliminate
+#        - Heading ### contestuale anteposto alla tabella (gold standard)
+#        Il modello mantiene la relazione colonna→valore grazie ai separatori.
+
+#     3. HEADING # rimossi dal corpo — già nel title: del prompt, evita
+#        duplicazione. Safety-net ridondante con strip_headers=True di LangChain.
+
+#     4. PROMPT NATIVO EmbeddingGemma (model card Google):
+#        "title: {breadcrumb | none} | text: ..."
+#        Allinea lo spazio vettoriale documento con le query che useranno:
+#        "task: search result | query: ..."  (o "task: question answering | ...")
+
+#     5. NORMALIZZAZIONE spazi — rimuove spazi multipli e newline eccessivi.
+
+#     Esempio output con tabella:
+#         title: Criteri graduatoria | text: Punteggi ammissione
+
+#         ### Criteri graduatoria
+#         | Requisito | Criterio | Punteggio |
+#         | :--- | :--- | :--- |
+#         | Voto diploma | Da 90 a 100 | 9 |
+#         | Voto diploma | Da 80 a 89 | 7 |
+
+#     ⚠  Lato backend/query, anteponi SEMPRE il prompt:
+#        "task: search result | query: {domanda}"
+#        "task: question answering | query: {domanda}"
+#     """
+#     t = testo
+
+#     # 1. Rimuovi marcatori # (safety-net, LangChain li toglie già con strip_headers=True)
+#     t = re.sub(r'^#{1,6}\s+', '', t, flags=re.MULTILINE)
+
+#     # 2. Normalizza tabelle Markdown (preserva struttura, fix celle vuote + heading)
+#     t = _processa_tabelle_nel_testo(t, breadcrumb_tabella=breadcrumb)
+
+#     # 3. Bold/italic — mantenuti per default (keep_bold=True)
+#     #    EmbeddingGemma capisce il grassetto come enfasi semantica
+#     if not keep_bold:
+#         t = re.sub(r'\*{2}([^*\n]+)\*{2}', r'\1', t)
+#         t = re.sub(r'\*([^*\n]+)\*', r'\1', t)
+#         t = re.sub(r'_{2}([^_\n]+)_{2}', r'\1', t)
+#         t = re.sub(r'_([^_\n]+)_', r'\1', t)
+
+#     # 4. Normalizza spazi
+#     t = re.sub(r'[ \t]{2,}', ' ', t)
+#     t = re.sub(r'\n{3,}', '\n\n', t).strip()
+
+#     # 5. Prompt nativo EmbeddingGemma per documenti
+#     #    Formato: "Documento: {doc_id} | title: {breadcrumb} | text: {testo}"
+#     #    Il prefisso Documento consente al retriever di filtrare/identificare la fonte.
+#     title_val = breadcrumb.strip() if breadcrumb else 'none'
+#     doc_prefix = f'Documento: {documento_id} | ' if documento_id else ''
+#     return f'{doc_prefix}title: {title_val} | text: {t}'  
+
+
+def prepara_testo_embedding(
+    testo: str,
+    breadcrumb: str = '',
+    keep_bold: bool = True,
+    documento_id: str = '',
+) -> str:
     """
-    Prepara il testo_embedding nel formato gold standard per EmbeddingGemma.
+    Prepara il testo_embedding nel formato ottimizzato per qwen3-embedding.
 
-    Struttura output:
-    ─────────────────────────────────────────────────────────
-    Documento: {documento_id} | title: {breadcrumb} | text: {testo con Markdown preservato}
-    ─────────────────────────────────────────────────────────
-
-    Il prefisso "Documento:" permette al retriever di filtrare per fonte e
-    contestualizza semanticamente il frammento nell'embedding space.
-
-    Principi applicati (da documentazione EmbeddingGemma + best practice):
-
-    1. MARKDOWN PRESERVATO — bold, italic, liste, heading nel testo
-       EmbeddingGemma è addestrato su GitHub/docs e capisce nativamenete
-       il Markdown; rimuoverlo degrada la qualità semantica.
-
-    2. TABELLE → formato Markdown normalizzato (NON testo lineare)
-       - Celle vuote / trattini → "N/D" (evita token semanticamente vuoti)
-       - Colonne vuote eliminate
-       - Heading ### contestuale anteposto alla tabella (gold standard)
-       Il modello mantiene la relazione colonna→valore grazie ai separatori.
-
-    3. HEADING # rimossi dal corpo — già nel title: del prompt, evita
-       duplicazione. Safety-net ridondante con strip_headers=True di LangChain.
-
-    4. PROMPT NATIVO EmbeddingGemma (model card Google):
-       "title: {breadcrumb | none} | text: ..."
-       Allinea lo spazio vettoriale documento con le query che useranno:
-       "task: search result | query: ..."  (o "task: question answering | ...")
-
-    5. NORMALIZZAZIONE spazi — rimuove spazi multipli e newline eccessivi.
-
-    Esempio output con tabella:
-        title: Criteri graduatoria | text: Punteggi ammissione
-
-        ### Criteri graduatoria
-        | Requisito | Criterio | Punteggio |
-        | :--- | :--- | :--- |
-        | Voto diploma | Da 90 a 100 | 9 |
-        | Voto diploma | Da 80 a 89 | 7 |
-
-    ⚠  Lato backend/query, anteponi SEMPRE il prompt:
-       "task: search result | query: {domanda}"
-       "task: question answering | query: {domanda}"
+    Qwen3 non richiede prefissi speciali sui documenti (a differenza di
+    EmbeddingGemma che usava "Documento: ... | title: ... | text: ...").
+    Il breadcrumb viene preposto come prima riga di contesto semantico.
+    Il prefisso Instruct va usato SOLO lato query (in AIService.embed_query).
     """
     t = testo
 
-    # 1. Rimuovi marcatori # (safety-net, LangChain li toglie già con strip_headers=True)
+    # 1. Rimuovi marcatori heading dal corpo (già presenti nel breadcrumb)
     t = re.sub(r'^#{1,6}\s+', '', t, flags=re.MULTILINE)
 
-    # 2. Normalizza tabelle Markdown (preserva struttura, fix celle vuote + heading)
+    # 2. Normalizza tabelle Markdown
     t = _processa_tabelle_nel_testo(t, breadcrumb_tabella=breadcrumb)
 
-    # 3. Bold/italic — mantenuti per default (keep_bold=True)
-    #    EmbeddingGemma capisce il grassetto come enfasi semantica
+    # 3. Bold/italic — mantenuti per default
     if not keep_bold:
         t = re.sub(r'\*{2}([^*\n]+)\*{2}', r'\1', t)
-        t = re.sub(r'\*([^*\n]+)\*', r'\1', t)
-        t = re.sub(r'_{2}([^_\n]+)_{2}', r'\1', t)
-        t = re.sub(r'_([^_\n]+)_', r'\1', t)
+        t = re.sub(r'\*([^*\n]+)\*',        r'\1', t)
+        t = re.sub(r'_{2}([^_\n]+)_{2}',    r'\1', t)
+        t = re.sub(r'_([^_\n]+)_',          r'\1', t)
 
     # 4. Normalizza spazi
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\n{3,}', '\n\n', t).strip()
 
-    # 5. Prompt nativo EmbeddingGemma per documenti
-    #    Formato: "Documento: {doc_id} | title: {breadcrumb} | text: {testo}"
-    #    Il prefisso Documento consente al retriever di filtrare/identificare la fonte.
-    title_val = breadcrumb.strip() if breadcrumb else 'none'
-    doc_prefix = f'Documento: {documento_id} | ' if documento_id else ''
-    return f'{doc_prefix}title: {title_val} | text: {t}'  
-
-
+    # 5. Formato qwen3: breadcrumb come contesto + testo
+    #    Nessun prefisso "title:" o "Documento:" — Qwen3 non ne ha bisogno
+    if breadcrumb and breadcrumb.strip():
+        return f"{breadcrumb.strip()}\n\n{t}"
+    return t
 # ---------------------------------------------------------------------------
 # MAPPA PAGINE (opzionale — file _pages.json accanto al .md)
 # ---------------------------------------------------------------------------

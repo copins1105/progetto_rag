@@ -33,13 +33,7 @@
 # volumes:
 #   postgres_data:
 
-
 services:
-
-  # ═══════════════════════════════════════════════════════════
-  # STACK MARKER (pipeline originale — porta 5432 / 8000)
-  # Usa i volumi ESISTENTI: dati già presenti preservati.
-  # ═══════════════════════════════════════════════════════════
 
   db_marker:
     image: ankane/pgvector:latest
@@ -52,7 +46,7 @@ services:
       POSTGRES_PASSWORD: POLICYNAVIGATOR
     volumes:
       - ./sql_scripts:/docker-entrypoint-initdb.d
-      - postgres_data:/var/lib/postgresql/data      # ← volume VECCHIO, dati esistenti
+      - postgres_data:/var/lib/postgresql/data
 
   chroma_marker:
     image: chromadb/chroma:latest
@@ -64,13 +58,7 @@ services:
       - ANONYMIZED_TELEMETRY=FALSE
       - PERSIST_DIRECTORY=/chroma/chroma
     volumes:
-      - ./chroma_data:/chroma/chroma                # ← cartella VECCHIA, dati esistenti
-
-  # ═══════════════════════════════════════════════════════════
-  # STACK MISTRAL (nuova pipeline — porta 5433 / 8001)
-  # Volumi nuovi, completamente vuoti.
-  # Lo schema SQL viene applicato automaticamente al primo avvio.
-  # ═══════════════════════════════════════════════════════════
+      - ./chroma_data:/chroma/chroma
 
   db_mistral:
     image: ankane/pgvector:latest
@@ -82,8 +70,8 @@ services:
       POSTGRES_USER: admin
       POSTGRES_PASSWORD: POLICYNAVIGATOR
     volumes:
-      - ./sql_scripts:/docker-entrypoint-initdb.d   # stesso schema SQL
-      - postgres_data_mistral:/var/lib/postgresql/data  # ← volume NUOVO, vuoto
+      - ./sql_scripts:/docker-entrypoint-initdb.d
+      - postgres_data_mistral:/var/lib/postgresql/data
 
   chroma_mistral:
     image: chromadb/chroma:latest
@@ -95,8 +83,39 @@ services:
       - ANONYMIZED_TELEMETRY=FALSE
       - PERSIST_DIRECTORY=/chroma/chroma
     volumes:
-      - ./chroma_data_mistral:/chroma/chroma        # ← cartella NUOVA, vuota
+      - ./chroma_data_mistral:/chroma/chroma
+
+  # ← NUOVI: solo questi due aggiungi
+  chroma_ui_marker:
+    image: mintplexlabs/vectoradmin:latest
+    container_name: chromadb_ui_marker
+    ports:
+      - "3002:3000"
+    depends_on:
+      - db_marker
+      - chroma_marker
+    environment:
+      - VECTOR_ADMIN_ENVIRONMENT=production
+      - DATABASE_CONNECTION_STRING=postgresql://admin:POLICYNAVIGATOR@db_marker:5432/vectoradmin_marker
+      - JWT_SECRET=vectoradmin_secret_marker_32chars!!
+      - INNGEST_EVENT_KEY=background_workers
+      - INNGEST_SIGNING_KEY=background_workers
+
+  chroma_ui_mistral:
+    image: mintplexlabs/vectoradmin:latest
+    container_name: chromadb_ui_mistral
+    ports:
+      - "3003:3000"
+    depends_on:
+      - db_mistral
+      - chroma_mistral
+    environment:
+      - VECTOR_ADMIN_ENVIRONMENT=production
+      - DATABASE_CONNECTION_STRING=postgresql://admin:POLICYNAVIGATOR@db_mistral:5432/vectoradmin_mistral
+      - JWT_SECRET=vectoradmin_secret_mistral_32chars!
+      - INNGEST_EVENT_KEY=background_workers
+      - INNGEST_SIGNING_KEY=background_workers
 
 volumes:
-  postgres_data:           # volume vecchio — Docker lo riconosce e preserva i dati
-  postgres_data_mistral:   # volume nuovo — Docker lo crea vuoto al primo avvio
+  postgres_data:
+  postgres_data_mistral:

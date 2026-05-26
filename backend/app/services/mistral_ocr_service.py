@@ -135,13 +135,23 @@ def _build_breadcrumb(h1: str, h2: str, h3: str) -> str:
     return ' > '.join(p for p in [clean(h1), clean(h2), clean(h3)] if p)
 
 
+# def _prepara_testo_embedding(testo: str, breadcrumb: str, documento_id: str) -> str:
+#     t = re.sub(r'^#{1,6}\s+', '', testo, flags=re.MULTILINE)
+#     t = re.sub(r'[ \t]{2,}', ' ', t)
+#     t = re.sub(r'\n{3,}', '\n\n', t).strip()
+#     title_val = breadcrumb.strip() if breadcrumb else 'none'
+#     doc_prefix = f'Documento: {documento_id} | ' if documento_id else ''
+#     return f'{doc_prefix}title: {title_val} | text: {t}'
+
+
 def _prepara_testo_embedding(testo: str, breadcrumb: str, documento_id: str) -> str:
     t = re.sub(r'^#{1,6}\s+', '', testo, flags=re.MULTILINE)
     t = re.sub(r'[ \t]{2,}', ' ', t)
     t = re.sub(r'\n{3,}', '\n\n', t).strip()
-    title_val = breadcrumb.strip() if breadcrumb else 'none'
-    doc_prefix = f'Documento: {documento_id} | ' if documento_id else ''
-    return f'{doc_prefix}title: {title_val} | text: {t}'
+
+    if breadcrumb and breadcrumb.strip():
+        return f"{breadcrumb.strip()}\n\n{t}"
+    return t
 
 
 def _classifica(testo: str, n_parole: int) -> tuple[str, bool]:

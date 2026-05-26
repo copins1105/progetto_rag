@@ -301,7 +301,7 @@ BEGIN
     VALUES (
       'superadmin@azienda.it',
       -- Hash di 'SuperAdmin123!' — CAMBIARE SUBITO IN PRODUZIONE
-      '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewYpfQN6HOkN2fge',
+      '$2b$12$4WvGCClS99syowK4H9JEEejo90.1FIrF.j2GMDjO6a9jz42OH8smq',
       'Super', 'Admin'
     )
     RETURNING utente_id INTO v_utente_id;
