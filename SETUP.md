@@ -35,6 +35,22 @@ Questa guida ti porta dall'installazione zero a un sistema funzionante. Segui i 
 
 ---
 
+### Certificati SSL (sviluppo locale)
+
+Se il backend usa HTTPS con certificati self-signed, generali localmente — **non condividere mai i file `.pem` su GitHub**:
+
+```bash
+mkdir backend/certs
+openssl req -x509 -newkey rsa:4096 \
+  -keyout backend/certs/localhost-key.pem \
+  -out backend/certs/localhost.pem \
+  -days 365 -nodes -subj "/CN=localhost"
+```
+
+> La cartella `certs/` è già nel `.gitignore` — ogni sviluppatore genera i propri certificati localmente.
+
+---
+
 ## 2. Installazione Docker
 
 ### Windows / macOS
