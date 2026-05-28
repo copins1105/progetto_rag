@@ -19,76 +19,48 @@ Questo documento descrive le decisioni architetturali, il flusso dei dati e come
 
 ## 1. Schema database
 
-### Tabelle principali
+### Diagramma ER — schema `public` (PostgreSQL)
 
-```
-Utente ──────────────────────────────────────────────────────┐
-  utente_id PK                                                │
-  email (UNIQUE)                                             │
-  password_hash                                              │
-  creato_da FK → Utente (self-ref: chi ha creato l'utente)   │
-                                                             │
-Utente_Ruolo (N:M)                                           │
-  utente_id FK → Utente                                      │
-  ruolo_id  FK → Ruolo                                       │
-                                                             │
-Ruolo                          Permesso                      │
-  ruolo_id PK                    permesso_id PK              │
-  nome_ruolo                     codice_permesso (UNIQUE)    │
-                                 descrizione                 │
-Ruolo_Permesso (N:M)                                         │
-  ruolo_id FK → Ruolo                                        │
-  permesso_id FK → Permesso                                  │
-                                                             │
-Utente_Permesso (override individuali)                       │
-  utente_id FK → Utente                                      │
-  permesso_id FK → Permesso                                  │
-  concesso BOOL (TRUE=grant, FALSE=deny)                     │
-                                                             │
-Documento ───────────────────────────────────────────────────┘
-  documento_id PK
-  titolo, versione (UNIQUE insieme)
-  id_tipo FK → Tipo_Documento
-  id_livello FK → Livello_Riservatezza
-  id_utente_caricamento FK → Utente  ← ownership
-  sync_status ('pending'|'synced'|'error'|...)
-  data_validita_inizio, data_scadenza
+Il diagramma seguente mostra tutte le tabelle del database, i tipi di colonna e le relazioni tra entità (generato da pgAdmin / DBeaver sull'istanza `policy_db`).
 
-Sync_Log
-  log_id PK
-  documento_id FK → Documento
-  evento, dettaglio, esito, timestamp
+![Diagramma ER — policy_db public schema](./postgres_3_-_policy_db_-_public.png)
 
-Chat_Sessione
-  sessione_id PK
-  session_uuid (UNIQUE)  ← chiave condivisa con frontend
-  utente_id FK → Utente
-  titolo, n_messaggi, is_archiviata
+> **Come leggere il diagramma:** le linee con notazione crow's foot indicano le cardinalità (1:N, 0..1:N). Le colonne con 🔑 icona `serial4`/`bigserial` sono chiavi primarie surrogate (auto-increment); quelle con 🔗 `int4` che puntano a un'altra tabella sono chiavi esterne.
 
-Log_Risposta
-  log_id PK
-  sessione_id FK → Chat_Sessione
-  testo_domanda, testo_risposta
-  tipo_risposta ('content'|'courtesy'|'not_found'|'blocked')
-  documento_ids INTEGER[]  ← array IDs documenti usati
-  sources_json JSONB       ← fonti con titolo+pagina+link
-  tempo_risposta_ms, feedback_csat
-  bloccato BOOL
+---
 
-Activity_Log
-  log_id BIGSERIAL PK
-  utente_id FK → Utente
-  azione VARCHAR(50)
-  dettaglio JSONB
-  ip_address INET
-  esito ('ok'|'error'|'warning')
+### Tabelle principali — descrizione
 
-Refresh_Token
-  token_id PK
-  utente_id FK → Utente
-  token_hash VARCHAR(64)  ← SHA-256, mai in chiaro
-  scadenza, revocato
-```
+Le tabelle sono raggruppate per dominio funzionale.
+
+#### Identità e accesso
+
+| Tabella | Ruolo |
+|---|---|
+| `utente` | Anagrafica utenti: email, password_hash, nome, cognome, `creato_da` (self-FK → ownership) |
+| `ruolo` | Catalogo ruoli (es. `SuperAdmin`, `Admin`, `User`) |
+| `utente_ruolo` | Associazione N:M utente ↔ ruolo |
+| `permesso` | Catalogo permessi atomici (`codice_permesso` UNIQUE) |
+| `ruolo_permesso` | Associazione N:M ruolo ↔ permesso (permessi ereditati) |
+| `utente_permesso` | Override individuali: `concesso=TRUE` (grant) o `FALSE` (deny), priorità assoluta sui permessi di ruolo |
+| `refresh_token` | Token di refresh JWT: hash SHA-256, scadenza, flag `revocato`, IP e user-agent |
+
+#### Documenti e knowledge base
+
+| Tabella | Ruolo |
+|---|---|
+| `documento` | Registro documenti: titolo, versione, `sync_status`, date di validità, FK verso tipo e livello di riservatezza |
+| `tipo_documento` | Lookup: categorie documentali (`nome_tipo`, `estensione_file`) |
+| `livello_riservatezza` | Lookup: livelli di riservatezza (`nome_livello`) |
+| `sync_log` | Log degli eventi di sincronizzazione PostgreSQL ↔ ChromaDB per ogni documento |
+
+#### Chat e audit
+
+| Tabella | Ruolo |
+|---|---|
+| `chat_sessione` | Sessione di conversazione: `session_uuid` (condiviso col frontend), `utente_id`, titolo, contatore messaggi, flag `is_archiviata` |
+| `log_risposta` | Ogni Q&A: testo domanda/risposta, `tipo_risposta` (`content`/`courtesy`/`not_found`/`blocked`), `documento_ids` (array), `sources_json` (JSONB), latenza, rating CSAT |
+| `activity_log` | Registro azioni di sistema (upload, ingestion, login, modifica utenti…): `azione`, `dettaglio` JSONB, `ip_address`, `esito` |
 
 ### Viste SQL utili
 
