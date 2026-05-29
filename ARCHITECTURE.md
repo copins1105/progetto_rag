@@ -102,7 +102,7 @@ Le tabelle sono raggruppate per dominio funzionale.
                      │  → WebSocket /progress/{job_id}     │
                      └──────────────┬──────────────────────┘
                                     │
-              ┌─────────────────────▼──────────────────────┐
+              ┌─────────────────────▼───────────────────────┐
               │         _run_ingestion_sync()               │
               │                                             │
               │  Pipeline MARKER:        Pipeline MISTRAL:  │
@@ -113,7 +113,7 @@ Le tabelle sono raggruppate per dominio funzionale.
               │  chunker_service                            │
               │  → chunking_e_indicizzazione()              │
               │                                             │
-              │  Output: {stem}_chunks.json in OUTPUT_DIR  │
+              │  Output: {stem}_chunks.json in OUTPUT_DIR   │
               └─────────────────────┬───────────────────────┘
                                     │
                      ┌──────────────▼──────────────────────┐
@@ -123,14 +123,14 @@ Le tabelle sono raggruppate per dominio funzionale.
                      └──────────────┬──────────────────────┘
                                     │
               ┌─────────────────────▼──────────────────────┐
-              │         loader_service.carica_documento()   │
-              │                                             │
-              │  1. Legge JSON chunks                       │
-              │  2. INSERT INTO Documento (PostgreSQL)      │
-              │  3. embed_documents() via Ollama            │
-              │  4. collection.add() in ChromaDB            │
+              │         loader_service.carica_documento()  │
+              │                                            │
+              │  1. Legge JSON chunks                      │
+              │  2. INSERT INTO Documento (PostgreSQL)     │
+              │  3. embed_documents() via Ollama           │
+              │  4. collection.add() in ChromaDB           │
               │  5. sync_status = 'synced'                 │
-              └─────────────────────────────────────────────┘
+              └────────────────────────────────────────────┘
 ```
 
 ### Schema JSON dei chunk
