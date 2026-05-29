@@ -35,27 +35,27 @@ Policy Navigator è un sistema RAG (Retrieval-Augmented Generation) completo per
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        Frontend React                        │
+│                        Frontend React                       │
 │               (chat UI + pannello Admin)                    │
 └────────────────────────┬────────────────────────────────────┘
                          │ HTTP / WebSocket
 ┌────────────────────────▼────────────────────────────────────┐
 │              Backend FastAPI  (main.py)                     │
 │                                                             │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐  │
-│  │  /api/v1/    │  │  /api/v1/    │  │   /api/v1/       │  │
-│  │    chat      │  │    admin     │  │    auth          │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────────────────┘  │
-│         │                 │                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────────┐   │
+│  │  /api/v1/    │  │  /api/v1/    │  │   /api/v1/       │   │
+│  │    chat      │  │    admin     │  │    auth          │   │
+│  └──────┬───────┘  └──────┬───────┘  └──────────────────┘   │
+│         │                 │                                 │
 │  ┌──────▼───────────────────────────────────────────────┐   │
 │  │            RAG Chain (LangGraph)                     │   │
-│  │  guard → query (HyDE) → routing → retrieval →       │   │
-│  │  relevance → answer → summary                       │   │
+│  │  guard → query (HyDE) → routing → retrieval →        │   │
+│  │  relevance → answer → summary                        │   │
 │  └──────────────────┬───────────────────────────────────┘   │
-│                     │                                        │
+│                     │                                       │
 │  ┌──────────────────▼──────────┐  ┌──────────────────────┐  │
-│  │   SearchService (BM25 +    │  │   PostgreSQL          │  │
-│  │   ChromaDB vettoriale)     │  │   (metadati + RBAC)   │  │
+│  │   SearchService (BM25 +     │  │  PostgreSQL          │  │
+│  │   ChromaDB vettoriale)      │  │  (metadati + RBAC)   │  │
 │  └─────────────────────────────┘  └──────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 
